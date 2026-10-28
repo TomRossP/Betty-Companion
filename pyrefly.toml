@@ -1,0 +1,2 @@
+python-interpreter-path = "C:/Users/User/AppData/Local/Programs/Python/Python313-32/python.exe"
+project-excludes = ["*v1.0*", "*v1.1*"]

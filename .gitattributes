@@ -1,0 +1,4 @@
+# Text files are stored with LF line endings; images and icons are binary
+* text=auto
+*.png binary
+*.ico binary

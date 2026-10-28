@@ -1,0 +1,80 @@
+{
+  "firm_name": "BetAnsells",
+  "effective_date": "2025-11-27",
+  "description": "Official BetAnsells Terms & Conditions, Rules and Payout Limits (effective 27th Nov 2025)",
+  "parameters": {
+    "max_greyhound_traps": 8
+  },
+  "non_normal_states": {
+    "STATE_FORECAST_NON_EXISTENT_RUNNER": {
+      "action": "ENTER_AS_WRITTEN_BETTY_SETTLES",
+      "citation": "Rule 1.17",
+      "description": "Settlement: a single forecast containing a non-runner or a racecard number not on the card is settled as a single. At entry the bet goes on as written (user, 23 Oct): a card number that isn't in the race is entered as a void selection ('v'), and Betty settles the non-runner."
+    },
+    "STATE_FORECAST_DIFFERENT_RACES": {
+      "action": "SPLIT_INTO_HALF_STAKE_SINGLES",
+      "citation": "Rule 1.17",
+      "description": "Forecast selections running in different races split into two half-stake Win Singles."
+    },
+    "STATE_FORECAST_REPEATED_RUNNER": {
+      "action": "CONVERT_TO_WIN_SINGLE_FULL_STAKE",
+      "citation": "Rule 1.17",
+      "description": "Repeated selection in a forecast converts to a Win Single at full forecast stake."
+    },
+    "STATE_FORECAST_LONE_SELECTION": {
+      "action": "CONVERT_TO_WIN_SINGLE_FULL_STAKE",
+      "citation": "Rule 1.17",
+      "description": "Lone selection in a forecast converts to a Win Single at full forecast stake."
+    },
+    "STATE_FORECAST_UNNAMED_FAVOURITE": {
+      "action": "VOID_BET",
+      "citation": "Rule 1.17",
+      "description": "Unnamed favourites cannot be used in forecasts (void)."
+    },
+    "STATE_TRICAST_ONE_NON_RUNNER": {
+      "action": "ENTER_AS_WRITTEN_BETTY_SETTLES",
+      "citation": "Rule 1.18",
+      "description": "Settlement: a tricast with a non-runner (or a number not on the card) is settled as a straight forecast on the remaining selections in the order written; a full-cover combination as a reverse forecast on the remaining two. At entry the bet goes on as written (user, 23 Oct): a card number that isn't in the race is entered as a void selection ('v'), and Betty settles the non-runner."
+    },
+    "STATE_TRICAST_TWO_NON_RUNNERS": {
+      "action": "ENTER_AS_WRITTEN_BETTY_SETTLES",
+      "citation": "Rule 1.18",
+      "description": "Settlement: a tricast with 2 non-runners (or numbers not on the card) is settled as a win single at SP on the remaining runner. At entry the bet goes on as written (user, 23 Oct): a card number that isn't in the race is entered as a void selection ('v'), and Betty settles the non-runner."
+    },
+    "STATE_TRICAST_REPEATED_RUNNER": {
+      "action": "CONVERT_TO_STRAIGHT_FORECAST_FULL_STAKE",
+      "citation": "Rule 1.18",
+      "description": "Repeated selection in a tricast converts to a Straight Forecast on the distinct selections."
+    },
+    "STATE_TRICAST_UNNAMED_FAVOURITE": {
+      "action": "VOID_BET",
+      "citation": "Rule 1.18",
+      "description": "Unnamed favourites cannot be used in tricasts (void)."
+    },
+    "STATE_FAVOURITE_EACH_WAY_REQUESTED": {
+      "action": "VOID_PLACE_ELEMENT_SETTLE_WIN_ONLY",
+      "citation": "Rule 1.7",
+      "description": "Starting price bets on favourites in horse and dog racing are Win Only; Each-Way place part is void."
+    },
+    "STATE_MULTIPLE_SAME_RACE_CLASH": {
+      "action": "SPLIT_INTO_LOWER_ACCUMULATORS",
+      "citation": "Rule 1.8.1",
+      "description": "Multiples containing clashed runners from the same race are split into lower accumulators/singles across clashed runners."
+    },
+    "STATE_SLIP_UNINSTRUCTED_SAME_RACE": {
+      "action": "SETTLE_AS_STRAIGHT_FORECAST",
+      "citation": "Rule 1.8.1",
+      "description": "2 selections in the same race with no instructions settle as a Straight Forecast."
+    },
+    "STATE_SLIP_UNINSTRUCTED_DIFFERENT_RACES": {
+      "action": "SPLIT_INTO_EQUAL_WIN_SINGLES",
+      "citation": "Rule 1.8.1",
+      "description": "Selections across different races with no instructions split equally as Win Singles."
+    },
+    "STATE_UNNAMED_UNTIMED_OR_MISTIMED": {
+      "action": "NEXT_RACE_AT_MEETING_UNLESS_TIME_FITS_OTHER_MEETING",
+      "citation": "Rule 1.8.4",
+      "description": "An un-named selection or favourite that is untimed or incorrectly timed is 'on' for the next race at that meeting, unless the time stated relates to another meeting covered by a full race-by-race service, in which case the race time takes precedence."
+    }
+  }
+}

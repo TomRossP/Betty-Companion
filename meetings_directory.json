@@ -1,0 +1,1012 @@
+{
+  "virtual_racing": {
+    "generic_virtual": {
+      "canonical_name": "Virtual",
+      "aliases": [
+        "virtual",
+        "virt",
+        "v",
+        "(v)",
+        "[v]",
+        "v.",
+        "(v.)",
+        "virtuals",
+        "virtual racing",
+        "v race"
+      ],
+      "type": "virtual_generic"
+    },
+    "dash": {
+      "canonical_name": "Dash",
+      "aliases": [
+        "dash",
+        "dash (v)",
+        "dash(v)",
+        "dash park",
+        "dashing derby",
+        "dsh"
+      ],
+      "type": "virtual_horse"
+    },
+    "portman_park": {
+      "canonical_name": "Portman Park",
+      "aliases": [
+        "portman park",
+        "portman",
+        "portman (v)",
+        "portman(v)",
+        "ptm",
+        "port",
+        "p. park",
+        "p park",
+        "p.park",
+        "ppark",
+        "p/park",
+        "p park (v)",
+        "p. park (v)",
+        "p.park(v)",
+        "pp",
+        "p p",
+        "p.p"
+      ],
+      "type": "virtual_horse"
+    },
+    "sprintvalley": {
+      "canonical_name": "Sprintvalley",
+      "aliases": [
+        "sprintvalley",
+        "sprint valley",
+        "sprint",
+        "sprint (v)",
+        "sprint(v)",
+        "spv",
+        "s. valley",
+        "s valley",
+        "s.valley",
+        "svalley",
+        "s/valley",
+        "sv",
+        "s v",
+        "s.v"
+      ],
+      "type": "virtual_horse"
+    },
+    "steepledown": {
+      "canonical_name": "Steepledown",
+      "aliases": [
+        "steepledown",
+        "steeple down",
+        "steepledown (v)",
+        "steepledown(v)",
+        "std",
+        "stpl",
+        "s. down",
+        "s down",
+        "s.down",
+        "sdown",
+        "s/down",
+        "sd",
+        "s d",
+        "s.d"
+      ],
+      "type": "virtual_horse"
+    },
+    "brushwood": {
+      "canonical_name": "Brushwood",
+      "aliases": [
+        "brushwood",
+        "brush wood",
+        "brushwood (v)",
+        "brushwood(v)",
+        "brw"
+      ],
+      "type": "virtual_horse"
+    },
+    "millers_mount": {
+      "canonical_name": "Millers Mount",
+      "aliases": [
+        "millers mount",
+        "millers",
+        "millers (v)",
+        "millers(v)",
+        "miller (v)",
+        "mlm"
+      ],
+      "type": "virtual_horse"
+    },
+    "meadowvale": {
+      "canonical_name": "Meadowvale",
+      "aliases": [
+        "meadowvale",
+        "meadow vale",
+        "meadow (v)",
+        "meadow(v)",
+        "mdw"
+      ],
+      "type": "virtual_horse"
+    },
+    "stanningley": {
+      "canonical_name": "Stanningley",
+      "aliases": [
+        "stanningley",
+        "stanningley (v)",
+        "stanningley(v)",
+        "stn"
+      ],
+      "type": "virtual_horse"
+    },
+    "longford": {
+      "canonical_name": "Longford",
+      "aliases": [
+        "longford",
+        "longford (v)",
+        "longford(v)",
+        "lgf"
+      ],
+      "type": "virtual_horse"
+    },
+    "hillside": {
+      "canonical_name": "Hillside",
+      "aliases": [
+        "hillside",
+        "hillside (v)",
+        "hillside(v)",
+        "hls"
+      ],
+      "type": "virtual_horse"
+    },
+    "rapid_track": {
+      "canonical_name": "Rapid Track",
+      "aliases": [
+        "rapid",
+        "rapid track",
+        "rapid dogs",
+        "rapid (v)",
+        "rapid(v)",
+        "rap"
+      ],
+      "type": "virtual_greyhound"
+    },
+    "sandy_lanes": {
+      "canonical_name": "Sandy Lanes",
+      "aliases": [
+        "sandy",
+        "sandy lanes",
+        "sandy (v)",
+        "sandy(v)",
+        "snd"
+      ],
+      "type": "virtual_greyhound"
+    },
+    "heathlands": {
+      "canonical_name": "Heathlands",
+      "aliases": [
+        "heathlands",
+        "heath",
+        "heath (v)",
+        "heath(v)",
+        "hth"
+      ],
+      "type": "virtual_greyhound"
+    },
+    "shelbourne_virtual": {
+      "canonical_name": "Shelbourne (V)",
+      "aliases": [
+        "shelbourne (v)",
+        "shelbourne(v)",
+        "shelbourne virtual",
+        "shelv"
+      ],
+      "type": "virtual_greyhound"
+    }
+  },
+  "greyhound_tracks": {
+    "sheffield": {
+      "canonical_name": "Sheffield",
+      "aliases": [
+        "sheff",
+        "shef",
+        "sheffield",
+        "sweft",
+        "swift",
+        "sheffd",
+        "shf",
+        "shefeild"
+      ]
+    },
+    "sunderland": {
+      "canonical_name": "Sunderland",
+      "aliases": [
+        "sund",
+        "sunder",
+        "sunderland",
+        "sun"
+      ]
+    },
+    "romford": {
+      "canonical_name": "Romford",
+      "aliases": [
+        "romf",
+        "rom",
+        "romford",
+        "rf"
+      ]
+    },
+    "crayford": {
+      "canonical_name": "Crayford",
+      "aliases": [
+        "cray",
+        "crayf",
+        "crayford",
+        "cr",
+        "crf"
+      ]
+    },
+    "monmore": {
+      "canonical_name": "Monmore",
+      "aliases": [
+        "monm",
+        "mon",
+        "monmore",
+        "monmore green"
+      ]
+    },
+    "hove": {
+      "canonical_name": "Hove",
+      "aliases": [
+        "hove",
+        "brighton & hove",
+        "brighton and hove"
+      ]
+    },
+    "towcester": {
+      "canonical_name": "Towcester",
+      "aliases": [
+        "towc",
+        "tow",
+        "towe",
+        "towec",
+        "owe",
+        "owc",
+        "towcester"
+      ]
+    },
+    "oxford": {
+      "canonical_name": "Oxford",
+      "aliases": [
+        "oxf",
+        "oxford"
+      ]
+    },
+    "central_park": {
+      "canonical_name": "Central Park",
+      "aliases": [
+        "central park",
+        "cp"
+      ]
+    },
+    "yarmouth": {
+      "canonical_name": "Yarmouth",
+      "aliases": [
+        "yar",
+        "yarm",
+        "yarmouth"
+      ]
+    },
+    "harlow": {
+      "canonical_name": "Harlow",
+      "aliases": [
+        "harl",
+        "har",
+        "harlow"
+      ]
+    },
+    "doncaster_dogs": {
+      "canonical_name": "Doncaster",
+      "aliases": [
+        "donc",
+        "don",
+        "doncaster",
+        "doncaster (dogs)",
+        "doncaster bags"
+      ]
+    },
+    "kinsley": {
+      "canonical_name": "Kinsley",
+      "aliases": [
+        "kins",
+        "kin",
+        "kinsley"
+      ]
+    },
+    "swindon": {
+      "canonical_name": "Swindon",
+      "aliases": [
+        "swin",
+        "swindon"
+      ]
+    },
+    "perry_barr": {
+      "canonical_name": "Perry Barr",
+      "aliases": [
+        "perry",
+        "perry barr",
+        "pb"
+      ]
+    },
+    "newcastle_dogs": {
+      "canonical_name": "Newcastle (Dogs)",
+      "aliases": [
+        "newc (dogs)",
+        "newcastle (dogs)",
+        "newcastle bags"
+      ]
+    },
+    "nottingham_dogs": {
+      "canonical_name": "Nottingham (Dogs)",
+      "aliases": [
+        "nottingham (dogs)",
+        "nottingham bags"
+      ]
+    },
+    "pelaw_grange": {
+      "canonical_name": "Pelaw Grange",
+      "aliases": [
+        "pelaw",
+        "pelaw grange"
+      ]
+    },
+    "valley": {
+      "canonical_name": "Valley",
+      "aliases": [
+        "valley"
+      ]
+    },
+    "mullingar": {
+      "canonical_name": "Mullingar",
+      "aliases": [
+        "mullingar"
+      ]
+    },
+    "tralee": {
+      "canonical_name": "Tralee",
+      "aliases": [
+        "tralee"
+      ]
+    },
+    "shelbourne_park": {
+      "canonical_name": "Shelbourne Park",
+      "aliases": [
+        "shelbourne",
+        "shelbourne park"
+      ]
+    },
+    "limerick": {
+      "canonical_name": "Limerick",
+      "aliases": [
+        "limerick"
+      ]
+    },
+    "curraheen_park": {
+      "canonical_name": "Curraheen Park",
+      "aliases": [
+        "curraheen",
+        "curraheen park"
+      ]
+    },
+    "clonmel": {
+      "canonical_name": "Clonmel",
+      "aliases": [
+        "clonmel"
+      ]
+    },
+    "youghal": {
+      "canonical_name": "Youghal",
+      "aliases": [
+        "youghal"
+      ]
+    },
+    "enniscorthy": {
+      "canonical_name": "Enniscorthy",
+      "aliases": [
+        "enniscorthy"
+      ]
+    },
+    "waterford": {
+      "canonical_name": "Waterford",
+      "aliases": [
+        "waterford"
+      ]
+    },
+    "galway_dogs": {
+      "canonical_name": "Galway (Dogs)",
+      "aliases": [
+        "galway dogs",
+        "galway (dogs)"
+      ]
+    }
+  },
+  "international_meetings": {
+    "fontainebleau": {
+      "canonical_name": "Fontainebleau",
+      "aliases": [
+        "fontainebleau",
+        "fontaine",
+        "fontbl"
+      ]
+    },
+    "chantilly": {
+      "canonical_name": "Chantilly",
+      "aliases": [
+        "chant",
+        "chantilly"
+      ]
+    },
+    "deauville": {
+      "canonical_name": "Deauville",
+      "aliases": [
+        "deauv",
+        "deauville"
+      ]
+    },
+    "saint_cloud": {
+      "canonical_name": "Saint-Cloud",
+      "aliases": [
+        "st cloud",
+        "saint cloud",
+        "saint-cloud"
+      ]
+    },
+    "longchamp": {
+      "canonical_name": "Longchamp",
+      "aliases": [
+        "longchamp"
+      ]
+    },
+    "auteuil": {
+      "canonical_name": "Auteuil",
+      "aliases": [
+        "auteuil"
+      ]
+    },
+    "cagnes": {
+      "canonical_name": "Cagnes-sur-Mer",
+      "aliases": [
+        "cagnes",
+        "cagnes-sur-mer"
+      ]
+    },
+    "compiegne": {
+      "canonical_name": "Compiegne",
+      "aliases": [
+        "comp",
+        "compiegne"
+      ]
+    },
+    "meydan": {
+      "canonical_name": "Meydan",
+      "aliases": [
+        "meydan",
+        "jebel ali"
+      ]
+    },
+    "fairview": {
+      "canonical_name": "Fairview",
+      "aliases": [
+        "fairview"
+      ]
+    },
+    "greyville": {
+      "canonical_name": "Greyville",
+      "aliases": [
+        "greyville"
+      ]
+    },
+    "turffontein": {
+      "canonical_name": "Turffontein",
+      "aliases": [
+        "turffontein"
+      ]
+    },
+    "kenilworth": {
+      "canonical_name": "Kenilworth",
+      "aliases": [
+        "kenilworth"
+      ]
+    },
+    "scottsville": {
+      "canonical_name": "Scottsville",
+      "aliases": [
+        "scottsville"
+      ]
+    },
+    "gulfstream_park": {
+      "canonical_name": "Gulfstream Park",
+      "aliases": [
+        "gulfstream",
+        "gulfstream park"
+      ]
+    },
+    "aqueduct": {
+      "canonical_name": "Aqueduct",
+      "aliases": [
+        "aqueduct"
+      ]
+    },
+    "saratoga": {
+      "canonical_name": "Saratoga",
+      "aliases": [
+        "saratoga"
+      ]
+    },
+    "belmont_park": {
+      "canonical_name": "Belmont Park",
+      "aliases": [
+        "belmont",
+        "belmont park"
+      ]
+    },
+    "happy_valley": {
+      "canonical_name": "Happy Valley",
+      "aliases": [
+        "happy valley"
+      ]
+    },
+    "sha_tin": {
+      "canonical_name": "Sha Tin",
+      "aliases": [
+        "sha tin"
+      ]
+    },
+    "flemington": {
+      "canonical_name": "Flemington",
+      "aliases": [
+        "flemington"
+      ]
+    },
+    "randwick": {
+      "canonical_name": "Randwick",
+      "aliases": [
+        "randwick"
+      ]
+    },
+    "caulfield": {
+      "canonical_name": "Caulfield",
+      "aliases": [
+        "caulfield"
+      ]
+    },
+    "philadelphia": {
+      "canonical_name": "Philadelphia",
+      "aliases": [
+        "philadelphia",
+        "phila",
+        "phil",
+        "parx",
+        "parx racing",
+        "philadelphia park"
+      ]
+    },
+    "churchill_downs": {
+      "canonical_name": "Churchill Downs",
+      "aliases": [
+        "churchill",
+        "churchill downs",
+        "cd"
+      ]
+    },
+    "del_mar": {
+      "canonical_name": "Del Mar",
+      "aliases": [
+        "del mar",
+        "delmar",
+        "dm"
+      ]
+    },
+    "santa_anita": {
+      "canonical_name": "Santa Anita",
+      "aliases": [
+        "santa anita",
+        "sa"
+      ]
+    },
+    "pimlico": {
+      "canonical_name": "Pimlico",
+      "aliases": [
+        "pimlico",
+        "pim"
+      ]
+    },
+    "tampa_bay": {
+      "canonical_name": "Tampa Bay Downs",
+      "aliases": [
+        "tampa",
+        "tampa bay",
+        "tampa bay downs",
+        "tbd"
+      ]
+    },
+    "keeneland": {
+      "canonical_name": "Keeneland",
+      "aliases": [
+        "keeneland",
+        "kee"
+      ]
+    },
+    "oaklawn_park": {
+      "canonical_name": "Oaklawn Park",
+      "aliases": [
+        "oaklawn",
+        "oaklawn park",
+        "op"
+      ]
+    },
+    "monmouth_park": {
+      "canonical_name": "Monmouth Park",
+      "aliases": [
+        "monmouth",
+        "monmouth park",
+        "mth"
+      ]
+    },
+    "woodbine": {
+      "canonical_name": "Woodbine",
+      "aliases": [
+        "woodbine",
+        "wo"
+      ]
+    },
+    "mahoning_valley": {
+      "canonical_name": "Mahoning Valley",
+      "aliases": [
+        "mahoning",
+        "mahoning valley",
+        "mvr"
+      ]
+    },
+    "mountaineer": {
+      "canonical_name": "Mountaineer",
+      "aliases": [
+        "mountaineer",
+        "mnr"
+      ]
+    },
+    "finger_lakes": {
+      "canonical_name": "Finger Lakes",
+      "aliases": [
+        "finger lakes",
+        "fl"
+      ]
+    },
+    "penn_national": {
+      "canonical_name": "Penn National",
+      "aliases": [
+        "penn national",
+        "penn",
+        "pen"
+      ]
+    },
+    "charles_town": {
+      "canonical_name": "Charles Town",
+      "aliases": [
+        "charles town",
+        "ct"
+      ]
+    },
+    "turfway_park": {
+      "canonical_name": "Turfway Park",
+      "aliases": [
+        "turfway",
+        "turfway park",
+        "tp"
+      ]
+    },
+    "golden_gate": {
+      "canonical_name": "Golden Gate Fields",
+      "aliases": [
+        "golden gate",
+        "golden gate fields",
+        "gg"
+      ]
+    },
+    "horseshoe_indianapolis": {
+      "canonical_name": "Horseshoe Indianapolis",
+      "aliases": [
+        "horseshoe indianapolis",
+        "indiana grand",
+        "indiana"
+      ]
+    },
+    "ellis_park": {
+      "canonical_name": "Ellis Park",
+      "aliases": [
+        "ellis park",
+        "el"
+      ]
+    },
+    "colonial_downs": {
+      "canonical_name": "Colonial Downs",
+      "aliases": [
+        "colonial downs",
+        "cnl"
+      ]
+    },
+    "hawthorne": {
+      "canonical_name": "Hawthorne",
+      "aliases": [
+        "hawthorne",
+        "haw"
+      ]
+    },
+    "fair_grounds": {
+      "canonical_name": "Fair Grounds",
+      "aliases": [
+        "fair grounds",
+        "fg"
+      ]
+    },
+    "delta_downs": {
+      "canonical_name": "Delta Downs",
+      "aliases": [
+        "delta downs",
+        "ded"
+      ]
+    },
+    "evangeline_downs": {
+      "canonical_name": "Evangeline Downs",
+      "aliases": [
+        "evangeline",
+        "evangeline downs",
+        "evd"
+      ]
+    },
+    "sam_houston": {
+      "canonical_name": "Sam Houston",
+      "aliases": [
+        "sam houston",
+        "hou"
+      ]
+    },
+    "lone_star": {
+      "canonical_name": "Lone Star Park",
+      "aliases": [
+        "lone star",
+        "lone star park",
+        "ls"
+      ]
+    },
+    "remington_park": {
+      "canonical_name": "Remington Park",
+      "aliases": [
+        "remington",
+        "remington park",
+        "rp"
+      ]
+    },
+    "sunland_park": {
+      "canonical_name": "Sunland Park",
+      "aliases": [
+        "sunland",
+        "sunland park"
+      ]
+    },
+    "turf_paradise": {
+      "canonical_name": "Turf Paradise",
+      "aliases": [
+        "turf paradise",
+        "tup"
+      ]
+    },
+    "presque_isle": {
+      "canonical_name": "Presque Isle Downs",
+      "aliases": [
+        "presque isle",
+        "presque isle downs",
+        "pid"
+      ]
+    },
+    "delaware_park": {
+      "canonical_name": "Delaware Park",
+      "aliases": [
+        "delaware",
+        "delaware park",
+        "del"
+      ]
+    },
+    "laurel_park": {
+      "canonical_name": "Laurel Park",
+      "aliases": [
+        "laurel",
+        "laurel park",
+        "lrl"
+      ]
+    },
+    "dieppe": {
+      "canonical_name": "Dieppe",
+      "aliases": [
+        "dieppe"
+      ]
+    },
+    "clairefontaine": {
+      "canonical_name": "Clairefontaine",
+      "aliases": [
+        "clairefontaine",
+        "claire"
+      ]
+    },
+    "craon": {
+      "canonical_name": "Craon",
+      "aliases": [
+        "craon"
+      ]
+    },
+    "lyon_parilly": {
+      "canonical_name": "Lyon-Parilly",
+      "aliases": [
+        "lyon parilly",
+        "lyon-parilly",
+        "parilly",
+        "lyon"
+      ]
+    },
+    "marseille_borely": {
+      "canonical_name": "Marseille-Borely",
+      "aliases": [
+        "marseille borely",
+        "borely",
+        "marseille"
+      ]
+    },
+    "pau": {
+      "canonical_name": "Pau",
+      "aliases": [
+        "pau"
+      ]
+    },
+    "strasbourg": {
+      "canonical_name": "Strasbourg",
+      "aliases": [
+        "strasbourg"
+      ]
+    },
+    "toulouse": {
+      "canonical_name": "Toulouse",
+      "aliases": [
+        "toulouse"
+      ]
+    },
+    "vichy": {
+      "canonical_name": "Vichy",
+      "aliases": [
+        "vichy"
+      ]
+    }
+  },
+  "uk_irish_course_aliases": {
+    "newb": "Newbury",
+    "newc": "Newcastle",
+    "newm": "Newmarket",
+    "chel": "Cheltenham",
+    "kemp": "Kempton",
+    "wolverhampton": "Wolverhampton",
+    "wolves": "Wolverhampton",
+    "wolv": "Wolverhampton",
+    "wow": "Wolverhampton",
+    "woy": "Wolverhampton",
+    "woly": "Wolverhampton",
+    "wol": "Wolverhampton",
+    "wov": "Wolverhampton",
+    "wlv": "Wolverhampton",
+    "wolver": "Wolverhampton",
+    "wolverh": "Wolverhampton",
+    "folv": "Wolverhampton",
+    "olv": "Wolverhampton",
+    "oly": "Wolverhampton",
+    "jon": "Wolverhampton",
+    "iwolv": "Wolverhampton",
+    "lwolv": "Wolverhampton",
+    "1wolv": "Wolverhampton",
+    "iwow": "Wolverhampton",
+    "lwow": "Wolverhampton",
+    "1wow": "Wolverhampton",
+    "iwoy": "Wolverhampton",
+    "lwoy": "Wolverhampton",
+    "1woy": "Wolverhampton",
+    "woiv": "Wolverhampton",
+    "wo1v": "Wolverhampton",
+    "wo1": "Wolverhampton",
+    "ling": "Lingfield",
+    "sout": "Southwell",
+    "isout": "Southwell",
+    "lsout": "Southwell",
+    "dund": "Dundalk",
+    "list": "Listowel",
+    "ayr": "Ayr",
+    "yr": "Ayr",
+    "yt": "Ayr",
+    "ay": "Ayr",
+    "ayer": "Ayr",
+    "ayre": "Ayr",
+    "ches": "Chester",
+    "york": "York",
+    "asct": "Ascot",
+    "good": "Goodwood",
+    "hayd": "Haydock",
+    "sand": "Sandown",
+    "eps": "Epsom",
+    "cur": "Curragh",
+    "leo": "Leopardstown",
+    "pun": "Punchestown",
+    "nav": "Navan",
+    "gow": "Gowran Park",
+    "pont": "Pontefract",
+    "catt": "Catterick",
+    "redc": "Redcar",
+    "thir": "Thirsk",
+    "weth": "Wetherby",
+    "carl": "Carlisle",
+    "cart": "Cartmel",
+    "hex": "Hexham",
+    "kel": "Kelso",
+    "muss": "Musselburgh",
+    "per": "Perth",
+    "pert": "Perth",
+    "ham": "Hamilton",
+    "ffos": "Ffos Las",
+    "bang": "Bangor-on-Dee",
+    "uttox": "Uttoxeter",
+    "worc": "Worcester",
+    "strat": "Stratford",
+    "warw": "Warwick",
+    "hunt": "Huntingdon",
+    "faken": "Fakenham",
+    "plum": "Plumpton",
+    "fontw": "Fontwell",
+    "taun": "Taunton",
+    "exet": "Exeter",
+    "newt": "Newton Abbot",
+    "n/a": "Newton Abbot",
+    "na": "Newton Abbot",
+    "new a": "Newton Abbot",
+    "bath": "Bath",
+    "salis": "Salisbury",
+    "wind": "Windsor",
+    "font": "Fontwell",
+    "fontwell": "Fontwell",
+    "beve": "Beverley",
+    "beverley": "Beverley",
+    "sedg": "Sedgefield",
+    "sedge": "Sedgefield",
+    "sedgefield": "Sedgefield",
+    "mark": "Market Rasen",
+    "markr": "Market Rasen",
+    "mark r": "Market Rasen",
+    "market": "Market Rasen",
+    "market rasen": "Market Rasen",
+    "marketrasen": "Market Rasen",
+    "mkt": "Market Rasen",
+    "mktr": "Market Rasen",
+    "mkt rasen": "Market Rasen",
+    "mr": "Market Rasen",
+    "donc": "Doncaster",
+    "doncaster": "Doncaster",
+    "chep": "Chepstow",
+    "chepstow": "Chepstow",
+    "brig": "Brighton",
+    "brighton": "Brighton",
+    "leic": "Leicester",
+    "leicester": "Leicester",
+    "lud": "Ludlow",
+    "ludlow": "Ludlow",
+    "nott": "Nottingham",
+    "nottingham": "Nottingham",
+    "rip": "Ripon",
+    "ripon": "Ripon",
+    "winc": "Wincanton",
+    "wincanton": "Wincanton",
+    "yarm": "Yarmouth",
+    "yarmouth": "Yarmouth",
+    "kilb": "Kilbeggan",
+    "kilbeggan": "Kilbeggan"
+  }
+}

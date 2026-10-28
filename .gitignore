@@ -1,0 +1,26 @@
+# Keys and per-PC settings: never committed (the repository is public)
+.env
+.env.*
+!.env.example
+
+# Console logs (kept on each PC for 30 days)
+logs/
+
+# Test material: real customer slips, Betty screenshots with wager numbers and payments, evaluation results
+scratch/
+handwriting_examples/
+
+# The firm's own rules text (bookmaker_rules.json holds what the program uses)
+betansells_rules_2026.txt
+
+# Old snapshots: git history replaces them
+previous_versions/
+
+# Build output and caches
+build/
+dist/
+runtime/
+tesseract/
+__pycache__/
+*.pyc
+.ruff_cache/
