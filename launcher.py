@@ -97,9 +97,9 @@ def betty_open() -> bool:
 # --- Today's racecards, meetings and runners (read on a background thread) ---
 
 def racecard_files(day: datetime.date | None = None) -> list[dict]:
-    """Today's horse and greyhound feed files in C:\\Events: file, sport, when Betty last wrote it, size, races."""
+    """Today's horse and greyhound feed files in Betty's Events folder: file, sport, when Betty last wrote it, size, races."""
     import betty_feed
-    events_dir = os.environ.get("BETTY_EVENTS_DIR", r"C:\Events")
+    events_dir = betty_feed.events_folder()
     prefix = betty_feed.feed_prefix(day or datetime.date.today())
     try:
         names = sorted(f for f in os.listdir(events_dir) if f.startswith(prefix) and f.lower().endswith(".dat"))
@@ -157,7 +157,8 @@ class RacecardReader:
 
     def read(self) -> dict:
         import betty_feed
-        out = {"event": "_data", "files": [], "groups": meeting_groups([]), "runners": [], "error": ""}
+        out = {"event": "_data", "files": [], "groups": meeting_groups([]), "runners": [], "error": "",
+               "events_dir": betty_feed.events_folder()}
         try:
             out["files"] = racecard_files()
             out["groups"] = meeting_groups(betty_feed.todays_meetings())
@@ -274,7 +275,8 @@ def read_journal(days: int = 30) -> list[dict]:
     return sorted(entries, key=lambda e: (e.get("date", ""), e.get("time", "")), reverse=True)
 
 
-STAFF_LINE = re.compile(r"^\[!\] Wager (\S+) needs staff: (.+)$")
+# Logs from 28 Oct start each line with its time ('15:35:25 [!] Wager ...'); older ones don't
+STAFF_LINE = re.compile(r"^(?:(?P<time>\d{2}:\d{2}:\d{2}) )?\[!\] Wager (?P<wager>\S+) needs staff: (?P<reason>.+)$")
 SHOT_NAME = re.compile(r"^staff_(.+)_(\d{8})_(\d{6})\.png$")
 
 
@@ -290,7 +292,8 @@ def staff_screenshots() -> dict[str, dict]:
 
 
 def staff_from_logs(paths: list[str]) -> list[dict]:
-    """Wagers left for staff in these logs (runs before the journal existed), timed by their screenshot."""
+    """Wagers left for staff in these logs (runs before the journal existed), timed by their screenshot, else by
+    the log line's own time."""
     shots = staff_screenshots()
     found, seen = [], set()
     for path in paths:
@@ -299,13 +302,13 @@ def staff_from_logs(paths: list[str]) -> list[dict]:
             with open(path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     m = STAFF_LINE.match(line.strip())
-                    if not m or m.groups() in seen:
+                    if not m or (m["wager"], m["reason"]) in seen:
                         continue
-                    seen.add(m.groups())
-                    shot = shots.get(m.group(1), {})
+                    seen.add((m["wager"], m["reason"]))
+                    shot = shots.get(m["wager"], {})
                     date = shot.get("date") or (f"{stamp.group(1)[:4]}-{stamp.group(1)[4:6]}-{stamp.group(1)[6:]}" if stamp else "")
-                    found.append({"kind": "staff", "wager": m.group(1), "reason": m.group(2), "date": date,
-                                  "time": shot.get("time", ""), "screenshot": shot.get("path"), "from_log": True})
+                    found.append({"kind": "staff", "wager": m["wager"], "reason": m["reason"], "date": date,
+                                  "time": shot.get("time") or m["time"] or "", "screenshot": shot.get("path"), "from_log": True})
         except OSError:
             continue
     return found
@@ -370,6 +373,7 @@ class App:
         root.after(300, self.check_gemini)
         root.after(400, self.refresh_data)
         root.after(500, self.reload_records)
+        root.after(600, self.save_betty_drive)
         root.after(600, self._tail_log)
         self._show_program()
         self._show_relay()
@@ -648,6 +652,12 @@ class App:
             self.show_ready()
         elif kind == "_pairing":
             self._pairing_update(ev)
+        elif kind == "_betty_drive":
+            if ev["root"]:
+                self.refresh_data(force=True)
+            else:
+                self._add_error("Betty's Events and DBF folders weren't found on any drive, so this till's drive "
+                                "wasn't saved. Check the manager till's share is connected (net use), then reopen.")
         self._show_program()
 
     def _reader_text(self, ev: dict) -> str:
@@ -802,7 +812,7 @@ class App:
         if not betty_open():
             reasons.append("Betty isn't open")
         if self.data and not self.data.get("files"):
-            reasons.append("no racecards for today in C:\\Events")
+            reasons.append(f"no racecards for today in {self.data.get('events_dir') or 'Events'}")
         if not app_paths.find_tesseract():
             reasons.append("Tesseract (screen reading) is missing")
         if self.gemini.get("ok") is False:
@@ -915,6 +925,7 @@ class App:
             messagebox.showinfo(WINDOW_TITLE, f"Paired as '{link['name'] if link else ''}'.\n\n"
                                               "Slips are read through the relay from the next one.")
             self.check_gemini(force=True)
+            self.save_betty_drive()
         else:
             messagebox.showwarning(WINDOW_TITLE, {"rejected": "The code was rejected on the relay.",
                                                   "expired": "The code expired before it was approved. Try again.",
@@ -1132,6 +1143,17 @@ class App:
 
     # --- Data and Runners ---
 
+    def save_betty_drive(self):
+        """
+        Once the till is paired, finds the drive with Betty's Events and DBF (C:\\ on the manager till, the mapped
+        share on a cashier till) and saves it for this build (betty_paths.json); used from then on. Done once.
+        """
+        import betty_feed
+        import relay_link
+        if relay_link.saved_link() and not betty_feed.saved_betty_root():
+            threading.Thread(target=lambda: self.inbox.put({"event": "_betty_drive", "root": betty_feed.save_betty_root()}),
+                             daemon=True).start()
+
     def refresh_data(self, force: bool = False):
         if not self.data_busy:
             self.data_busy = True
@@ -1150,10 +1172,11 @@ class App:
         if self.data.get("error"):
             self.files_status.configure(text=f"Couldn't read the racecards: {self.data['error']}", foreground=RED)
         elif not files:
-            self.files_status.configure(text="None found for today in C:\\Events: is Betty running?", foreground=RED)
+            self.files_status.configure(text=f"None found for today in {self.data.get('events_dir') or 'Events'}: is Betty running?", foreground=RED)
         else:
             newest = max(f["modified"] for f in files)
-            self.files_status.configure(text=f"{len(files)} file(s), last written {_ago(now - newest)}", foreground=GREEN)
+            self.files_status.configure(text=f"{len(files)} file(s) in {self.data.get('events_dir')}, last written "
+                                             f"{_ago(now - newest)}", foreground=GREEN)
         titles = {"horse_home": "Horses: UK & Irish", "horse_intl": "Horses: international",
                   "dog_home": "Greyhounds: UK & Irish", "dog_intl": "Greyhounds: international"}
         for key, tree in self.meeting_trees.items():

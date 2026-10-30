@@ -22,10 +22,13 @@ number of its own) to C:\\DBF\\transact.DBF: TRANS_TYPE 87, DEALER_2 = the event
 it off, normally seconds after the off. BettyOffTimes reads them.
 """
 import datetime
+import json
 import os
 import re
 import struct
 import time
+
+import app_paths
 
 HEADER_SIZE = 145
 MEETING_COUNT_OFF = 111
@@ -46,6 +49,81 @@ DOMESTIC_COUNTRIES = {"UK", "IE"}
 
 _DAY_CODES = "123456789abcdefghijklmnopqrstuv"
 _MONTH_CODES = "123456789abc"
+
+
+# Betty's files are on the manager till's C:\ (Betty 0). The cashier tills have no Events or DBF of their own: their
+# Betty reads them from the manager till's C:\, shared as drvc and mapped as a network drive (F: at South Oxhey).
+BETTY_SHARE = os.environ.get("BETTY_SHARE", r"\\PC\drvc")
+BETTY_DRIVES = ["C:\\"] + [f"{d}:\\" for d in "DEFGHIJKLMNOPQRSTUVWXYZ"] + [BETTY_SHARE]
+ROOT_RETRY_SECS = 30  # while no drive has Betty's folders, look again at most this often
+_root = {"found": "", "tried_at": 0.0}
+
+
+def _has_betty(root: str) -> bool:
+    return all(os.path.isdir(os.path.join(root, sub)) for sub in ("Events", "DBF"))
+
+
+def find_betty_root() -> str:
+    """The first of BETTY_DRIVES holding both Events and DBF: C:\\ on the manager till, the mapped share (F:) on a
+    cashier till, else the share itself (\\\\PC\\drvc, BETTY_SHARE) when no letter is mapped. '' when none has."""
+    return next((d for d in BETTY_DRIVES if _has_betty(d)), "")
+
+
+def saved_betty_root() -> str:
+    """The drive saved for this build on this till ('' before the first save)."""
+    try:
+        with open(app_paths.betty_paths_file(), encoding="utf-8") as f:
+            return json.load(f)["root"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def save_betty_root() -> str:
+    """
+    Looks for Betty's drive and saves it for this build on this till: the launcher does it once, after the till is
+    paired. The drive saved, or '' when no drive has Betty's folders (nothing saved).
+    """
+    root = find_betty_root()
+    if root:
+        _root.update(found=root)
+        try:
+            with open(app_paths.betty_paths_file(), "w", encoding="utf-8") as f:
+                json.dump({"root": root, "found": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}, f, indent=2)
+            print(f"[+] Betty's files: {root} (saved for this till)")
+        except OSError as e:
+            print(f"[-] Betty's files: {root}, but it couldn't be saved ({e}). Looked for again next run.")
+    return root
+
+
+def betty_root() -> str:
+    """
+    The drive holding Betty's Events and DBF folders: the one saved for this till, else found by find_betty_root
+    (before the till is saved, or while its saved drive can't be reached, e.g. F: not reconnected yet; the saved
+    one is kept). Found once a run; while none is found it's C:\\ (so messages name the usual place) and looked for
+    again every ROOT_RETRY_SECS.
+    """
+    if not _root["found"] and time.time() - _root["tried_at"] >= ROOT_RETRY_SECS:
+        _root["tried_at"] = time.time()
+        saved = saved_betty_root()
+        if saved and _has_betty(saved):
+            _root["found"] = saved
+        else:
+            _root["found"] = find_betty_root()
+            if saved:
+                print(f"[-] Betty's files: the saved drive {saved} can't be reached; using {_root['found'] or 'none'}.")
+            elif _root["found"]:
+                print(f"[+] Betty's files: {_root['found']}")
+    return _root["found"] or "C:\\"
+
+
+def events_folder() -> str:
+    """Betty's race card folder: BETTY_EVENTS_DIR, else Events on Betty's drive."""
+    return os.environ.get("BETTY_EVENTS_DIR") or os.path.join(betty_root(), "Events")
+
+
+def dbf_folder() -> str:
+    """Betty's data folder (transact.DBF): BETTY_DBF_DIR, else DBF on Betty's drive."""
+    return os.environ.get("BETTY_DBF_DIR") or os.path.join(betty_root(), "DBF")
 
 
 def feed_prefix(day: datetime.date) -> str:
@@ -117,7 +195,7 @@ class BettyFeedCard:
         afresh as Betty adds feeds. Named `feeds` (or BETTY_HORSE_FEEDS) fix the list instead. `greyhounds`: every
         real race is category 'greyhound' (UK, Irish or Australian alike); virtual dogs stay 'virtual'.
         """
-        self.events_dir = events_dir or os.environ.get("BETTY_EVENTS_DIR", r"C:\Events")
+        self._events_dir = events_dir
         env_feeds = None if sports else os.environ.get("BETTY_HORSE_FEEDS")  # the horse override, not the dog card's
         self.feeds = feeds or (tuple(f.strip() for f in env_feeds.split(",")) if env_feeds else None)
         self.sports = None if self.feeds else tuple(s.upper() for s in (sports or HORSE_SPORTS))
@@ -130,6 +208,10 @@ class BettyFeedCard:
         self._found: tuple = ((), ())  # (prefix, folder time) -> feed paths found by sport
         self._checked_at = 0.0
         self._reported: tuple = ()
+
+    @property
+    def events_dir(self) -> str:
+        return self._events_dir or events_folder()  # found at each read: a cashier till's F: may connect after startup
 
     def _paths(self) -> list[str]:
         prefix = feed_prefix(self.fixed_day or datetime.date.today())
@@ -232,12 +314,16 @@ class BettyOffTimes:
     """
 
     def __init__(self, dbf_dir: str | None = None, day: datetime.date | None = None):
-        self.path = os.path.join(dbf_dir or os.environ.get("BETTY_DBF_DIR", r"C:\DBF"), "transact.DBF")
+        self._dbf_dir = dbf_dir
         self.fixed_day = day
         self._day = ""
         self._read_to = 0  # records read so far
         self._offs: dict[int, int] = {}
         self._reported = ""
+
+    @property
+    def path(self) -> str:
+        return os.path.join(self._dbf_dir or dbf_folder(), "transact.DBF")
 
     def refresh(self) -> dict[int, int]:
         day = (self.fixed_day or datetime.date.today()).strftime("%Y%m%d")
@@ -319,7 +405,7 @@ def todays_meetings(day: datetime.date | None = None, events_dir: str | None = N
     [{meeting, sport, region, country, races, first, last, feeds}], UK/IRE first, then by sport and first race.
     For the launcher's Data tab and `python betty_feed.py --meetings`.
     """
-    events_dir = events_dir or os.environ.get("BETTY_EVENTS_DIR", r"C:\Events")
+    events_dir = events_dir or events_folder()
     prefix = feed_prefix(day or datetime.date.today())
     try:
         names = sorted(f for f in os.listdir(events_dir) if f.startswith(prefix) and f.lower().endswith(".dat"))

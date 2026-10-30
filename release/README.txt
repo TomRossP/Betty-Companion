@@ -17,6 +17,9 @@ FIRST TIME ON A TILL
    - Controls tab: check the Relay address and type a Till name, e.g. "Shop 1 - Till 2", then "Pair this till".
    - A 6-digit code appears. On the manager's phone, open the relay's /admin page and approve the same code.
    - Within a few seconds the window says "Paired". Nothing else to type, ever.
+5. Once paired, it finds where Betty keeps its racecards and saves it in betty_paths.json: C:\ on the manager's
+   till, the manager's shared drive (e.g. F:) on a cashier's till. The Data tab shows the folder in use.
+   If the till's drives change, delete betty_paths.json and reopen the program to find them again.
 
 
 EVERY DAY
@@ -41,4 +44,5 @@ had to type in (what the reader saw, what was typed, and the slip).
 UPDATING
 --------
 Close Betty Companion, then replace this folder with the new one, keeping the "logs" folder if you want the history.
-The till stays paired: its pass is kept by Windows, not in this folder.
+The till stays paired: its pass is kept by Windows, not in this folder. The new version finds Betty's drive again
+by itself (or keep betty_paths.json from the old folder).

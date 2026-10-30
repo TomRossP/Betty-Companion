@@ -1,4 +1,4 @@
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -42,11 +42,24 @@ SESSION_LOG = ""  # this run's log file (empty in the free tests)
 
 class ConsoleTeeLogger:
     """Duplicates stdout and stderr to a per-session log file in logs/ with immediate flush on every write.
-    `original_stream` None (--backend): the log file only."""
+    `original_stream` None (--backend): the log file only. Each line in the file starts with the time it was
+    written ('15:35:25 [!] ...'; user, 28 Oct); blank lines and the console stay as printed."""
+    _lock = threading.Lock()  # stdout and stderr write one file: one lock and one line start between them
+    _at_line_start = True
+
     def __init__(self, filepath: str, original_stream: Any):
         self.original_stream = original_stream
         self.log_file = open(filepath, 'a', encoding='utf-8', buffering=1)
-        self._lock = threading.Lock()
+
+    @classmethod
+    def _stamped(cls, data: str) -> str:
+        stamp, out = time.strftime('%H:%M:%S '), []
+        for piece in data.splitlines(keepends=True):
+            if cls._at_line_start and piece.strip():
+                out.append(stamp)
+            out.append(piece)
+            cls._at_line_start = piece.endswith(('\n', '\r'))
+        return ''.join(out)
 
     def write(self, data: str):
         with self._lock:
@@ -57,7 +70,7 @@ class ConsoleTeeLogger:
                 except Exception:
                     pass
             try:
-                self.log_file.write(data)
+                self.log_file.write(ConsoleTeeLogger._stamped(data))
                 self.log_file.flush()
             except Exception:
                 pass
@@ -756,11 +769,24 @@ def _hinted_meeting(horse: dict) -> str:
     return hint or _real_meeting(horse.get('meeting'), as_written=False)
 
 
+# (card meeting, written meeting) -> _meeting_matches. Cleared at each pre-flight: the answer can change with the
+# meetings directory and the day's dog card. Each fuzzy lookup took ~3 ms, and the pre-flight asks once per runner
+# (9.2455858, 28 Oct: 70 s on 'checking selections against Betty's card')
+_meeting_match_cache: dict[tuple[str, str], bool] = {}
+
+
 def _meeting_matches(runner_meeting: str, hinted: str) -> bool:
     """True when the card meeting fits what was written. A 1-2 letter hint is read against the card itself
     (e.g. 'N' at 4.28 = whichever 'N...' meeting has a race then), never guessed from a fixed list."""
     if not hinted:
         return False
+    key = (runner_meeting, hinted)
+    if key not in _meeting_match_cache:
+        _meeting_match_cache[key] = _meeting_matches_uncached(runner_meeting, hinted)
+    return _meeting_match_cache[key]
+
+
+def _meeting_matches_uncached(runner_meeting: str, hinted: str) -> bool:
     if meetings_manager.are_meetings_equivalent(runner_meeting, hinted):
         return True
     h = re.sub(r'[^a-z]', '', hinted.lower())
@@ -997,8 +1023,8 @@ def unnamed_by_timing_rule(horse: dict, pools: list[list[dict]], struck_mins: fl
     now = struck_mins if struck_mins is not None else clock.tm_hour * 60 + clock.tm_min + clock.tm_sec / 60
     times = {m for m, _ in (parse_race_time_to_minutes(str(horse.get(k) or '')) for k in ('raw_time', 'time')) if m is not None}
 
-    def fits(r: dict) -> bool:
-        return any(abs(r['minutes'] - m) <= TIME_AGREE_MINS for m in times)
+    def fits(r: dict, window: int = TIME_AGREE_MINS) -> bool:
+        return any(abs(r['minutes'] - m) <= window for m in times)
 
     seen, every = set(), []
     for pool in pools:
@@ -1022,15 +1048,18 @@ def unnamed_by_timing_rule(horse: dict, pools: list[list[dict]], struck_mins: fl
                 # late-selection box ("apply Void Selection processing?" -> Yes) voids it (user, 26 Oct; 9.2453119)
                 return [late], "a late bet: the race was off when the bet was struck (Betty's late-selection box voids it)"
             return [], ''  # correctly timed (several races, or the number is there): not this rule
-        other = [r for r in every if r not in at_meeting_all and (favourite or r.get('number') == number)
-                 and fits(r) and still_to_run(r, now)]
-        for tier in TIME_CLASH_ORDER:
-            group = {(r['meeting'], r['time_str']): r for r in other if r.get('category', 'domestic') == tier}
-            if group:
-                where = f"no race at {hinted} then" if hinted else "no meeting written"
-                split = f", stake divided over {len(group)} races" if len(group) > 1 else ""
-                found = [favourite_of(r) for r in group.values()] if favourite else list(group.values())
-                return found, f"{cite}: {where}, the time takes precedence{split}"
+        # A race at the very time written beats races only near it, whatever their kind (9.2455858, 28 Oct: trap 1
+        # at 3.13 was split over horse races at 15:06, 15:16 and 15:21, not the Sunderland dogs at 15:13)
+        for window in (0, TIME_AGREE_MINS):
+            other = [r for r in every if r not in at_meeting_all and (favourite or r.get('number') == number)
+                     and fits(r, window) and still_to_run(r, now)]
+            for tier in TIME_CLASH_ORDER:
+                group = {(r['meeting'], r['time_str']): r for r in other if r.get('category', 'domestic') == tier}
+                if group:
+                    where = f"no race at {hinted} then" if hinted else "no meeting written"
+                    split = f", stake divided over {len(group)} races" if len(group) > 1 else ""
+                    found = [favourite_of(r) for r in group.values()] if favourite else list(group.values())
+                    return found, f"{cite}: {where}, the time takes precedence{split}"
     elif favourite and not hinted:  # no meeting, time or race at all: the earliest race still to run, horse or dog
         first = sorted((r for r in every if r.get('category') in ('domestic', 'greyhound') and still_to_run(r, now)),
                        key=lambda r: r['minutes'])
@@ -1066,9 +1095,14 @@ def number_bet_is_dog(horse: dict, runners: list[dict]) -> bool:
     if TRAP_WRITTEN.match(str(horse.get('name') or '').strip()):
         return True
     hinted = _hinted_meeting(horse)
-    if not hinted or any(r.get('category') != 'greyhound' and _meeting_matches(r['meeting'], hinted) for r in runners):
+    if not hinted:
         return False
-    return (any(r.get('category') == 'greyhound' and _meeting_matches(r['meeting'], hinted) for r in runners)
+    # Each meeting once, not each of the card's 13,000 runners (9.2455858: 'Sund' matched no horse runner, so
+    # every one was compared)
+    meetings = {(r.get('category') == 'greyhound', r['meeting']) for r in runners}
+    if any(not dog and _meeting_matches(m, hinted) for dog, m in meetings):
+        return False
+    return (any(dog and _meeting_matches(m, hinted) for dog, m in meetings)
             or bool(is_greyhound_or_trap_selection(dict(horse))[2]))
 
 
@@ -3191,6 +3225,7 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
     # Every horse and greyhound card Betty has, read fresh (not up to RECHECK_SECS old): a feed Betty added moments ago counts
     fresh = lambda card: card.refresh() if hasattr(card, 'refresh') else card.get_runners()
     runners = race_offs.mark(fresh(racecard_manager) + fresh(greyhound_card))  # with when each race went off
+    _meeting_match_cache.clear()  # the cards and the meetings directory as they are now
     if not runners:
         print("[-] Betty racecard feed unavailable. Proceeding with UNVERIFIED slip data.")
         notify("Betty racecard feed not found: selections are NOT verified. Check each runner on screen.", is_error=True)
@@ -4325,23 +4360,27 @@ def slip_showing(img: Any = None) -> bool:
 
 
 def open_race_entry() -> str:
-    """From the loaded wager on View Wagers: End (Edit Empty Bet), then '/' to the race-entry time box."""
+    """
+    From the loaded wager on View Wagers: End (Edit Empty Bet), '1' past the events screen to race entry, then '/'
+    for the time box. The same on every till (user, 28 Oct): the cashiers' tills don't take '/' on the events screen.
+    '1' is pressed again only while Betty still shows the events screen (it can be missed while the screen draws).
+    """
     print(f"[*] Pressing End (Edit Empty Bet) on {detect_screen()}...")
     betty_press('end')
     screen = expect_screen({SCREEN_EVENT_MENU, SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY_BROKEN},
                            doing="Edit Empty Bet (End)")
     print(f"[*] After End: {screen}")
-    if screen in (SCREEN_EVENT_MENU, SCREEN_UNKNOWN):  # End always opens the event menu; '/' goes on to the time box
+    if screen in (SCREEN_EVENT_MENU, SCREEN_UNKNOWN):  # End always opens the event menu
         entry = {SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY_BROKEN}
         for attempt in range(1, 4):
-            betty_press('/')
+            betty_press('1')
             screen = wait_for_screen(entry | {SCREEN_EVENT_MENU}, timeout=0.6)
             screen = wait_for_screen(entry, timeout=1.5) if screen == SCREEN_EVENT_MENU else screen
-            print(f"[*] After '/' ({attempt}): {screen}")
-            if screen != SCREEN_EVENT_MENU:  # pressed again only while Betty still shows the event menu
+            print(f"[*] After '1' ({attempt}): {screen}")
+            if screen != SCREEN_EVENT_MENU:  # pressed again only while Betty still shows the events screen
                 break
         if screen == SCREEN_EVENT_MENU:
-            raise NavError("time box ('/'): Betty still shows the event menu after 3 presses")
+            raise NavError("race entry ('1'): Betty still shows the events screen after 3 presses")
     if screen == SCREEN_RACE_ENTRY_BROKEN:
         raise SlipNotShowing("Betty opened the bet in its broken state (no slip image)")
     if screen == SCREEN_RACE_ENTRY:
@@ -4366,9 +4405,20 @@ def wager_gone_from_list(number: str) -> bool:
     return detect_screen(img) == SCREEN_VIEW_WAGERS and number not in read_unedited_queue(img)
 
 
+VW_FAO_MANAGER_AREA = (905, 200, 455, 200)  # the wager's slip panel, where Betty writes FAO MANAGER (x ~1015-1250, y ~290-320)
+FAO_MAGENTA = (255, 0, 255)                # its colour; a guaranteed price is purple (128, 0, 128), never this
+FAO_CONFIRM_SECS = 3.0
+
+
+def shows_fao_manager(img: Any) -> bool:
+    """View Wagers shows the loaded wager marked FAO: the large magenta FAO MANAGER on its slip panel (user's
+    screenshot, 28 Oct). Colour alone: the letters cover ~2% of the area, nothing else there is magenta."""
+    return _colour_share(np.array(img.convert('RGB')), VW_FAO_MANAGER_AREA, FAO_MAGENTA, tol=60) >= 0.005
+
+
 def mark_wager_fao(number: str) -> str:
     """
-    Send a wager to the manager: Home -> View Wagers -> click it -> Mark bet fao Manager -> check it left the list.
+    Send a wager to the manager: Home -> View Wagers -> click it -> Mark bet fao Manager -> FAO MANAGER shows on it.
     'marked'; 'already' when View Wagers shows the 'Unedited Fao Only' list, whose wagers are FAO already (clicking
     again does nothing: 9.2448529, 23 Oct); '' when it could not be done.
     """
@@ -4385,12 +4435,15 @@ def mark_wager_fao(number: str) -> str:
         return ''
     load_wager(queue.index(number), number)
     betty_click(*VW_MARK_FAO_BTN)
+    # Betty writes FAO MANAGER on the wager's slip panel at once; the wager leaves the unedited list only some time
+    # later. Waiting for that reported every FAO as failed (9.2455944 and every one before it, 28 Oct; user)
     t0 = time.time()
-    while time.time() - t0 < 6.5:
-        if wager_gone_from_list(number):
+    while time.time() - t0 < FAO_CONFIRM_SECS:
+        if shows_fao_manager(pyautogui.screenshot()):
+            print(f"[+] FAO: wager {number} shows FAO MANAGER.")
             return 'marked'
         time.sleep(0.1)
-    print(f"[-] FAO: wager {number} is still in the unedited list after Mark bet fao Manager.")
+    print(f"[-] FAO: Mark bet fao Manager clicked for wager {number}, but FAO MANAGER didn't show.")
     return ''
 
 
@@ -5279,17 +5332,39 @@ def check_slip_before_f8(horses: list[dict], struck_clock: str | None):
     print(f"[+] Before F8: {len(lines)} selection(s) checked, {n_bog} guaranteed.")
 
 
+def _f8_selected(img: Any) -> list[bool]:
+    """Which of the bet list's 11 rows are selected (green), by colour alone: no text read."""
+    x, y, w, _ = F8_BET_LIST_REGION_1368
+    arr = np.array(img.convert('RGB'))
+    return [_colour_share(arr, (x + 2, int(y + i * F8_ROW_HEIGHT_1368) + 3, w - 4, int(F8_ROW_HEIGHT_1368) - 6),
+                          F8_ROW_GREEN) >= 0.4 for i in range(F8_NUM_ROWS)]
+
+
+def _f8_texts(img: Any) -> list[str]:
+    """
+    The bet list's 11 rows as letters and digits, in one OCR of the whole list put back into rows by height. A
+    Tesseract run per row (and a second for a blank one) took ~2 s a read, and choosing a bet type read the list
+    about 4 times: 11-15 s on every bet before F12 (9.2455887, 28 Oct). One pass: ~0.3 s, the same 113 named rows
+    on every saved bet-list screen.
+    """
+    x, y, w, h = F8_BET_LIST_REGION_1368
+    scale = 2
+    crop = img.convert('L').crop((x, y, x + w, y + h)).resize((w * scale, h * scale))
+    try:
+        d = pytesseract.image_to_data(crop, config='--psm 6', output_type=pytesseract.Output.DICT)
+    except Exception as e:
+        print(f"[-] OCR failed: {e}")
+        return [''] * F8_NUM_ROWS
+    rows: dict[int, list[str]] = {}
+    for word, top, height in zip(d['text'], d['top'], d['height']):
+        if word.strip():
+            rows.setdefault(int((top + height / 2) / scale // F8_ROW_HEIGHT_1368), []).append(word.strip())
+    return [re.sub(r'[^a-z0-9]', '', " ".join(rows.get(i, [])).lower()) for i in range(F8_NUM_ROWS)]
+
+
 def _f8_rows(img: Any) -> list[tuple[str, bool]]:
     """The bet list on Choose Bet and Stake: [(letters, selected)] for the 11 rows."""
-    x, y, w, h = F8_BET_LIST_REGION_1368
-    crop = img.crop((x, y, x + w, y + h))
-    arr = np.array(img.convert('RGB'))
-    rows = []
-    for i in range(F8_NUM_ROWS):
-        ry = int(y + i * F8_ROW_HEIGHT_1368)
-        selected = _colour_share(arr, (x + 2, ry + 3, w - 4, int(F8_ROW_HEIGHT_1368) - 6), F8_ROW_GREEN) >= 0.4
-        rows.append((re.sub(r'[^a-z0-9]', '', ocr_f8_row_text(i, crop).lower()), selected))
-    return rows
+    return list(zip(_f8_texts(img), _f8_selected(img)))
 
 
 F8_PAGE_MIN_ROWS = 6      # a page counts as read only when this many rows read as known bet names (a blank row
@@ -5362,15 +5437,30 @@ def _find_bet_row(canon: str) -> tuple[int | None, list]:
     last = None
     for _ in range(F8_PAGE_READS):
         _check_stop()
-        rows = _f8_rows(pyautogui.screenshot())
+        shot = pyautogui.screenshot()
+        rows = _f8_rows(shot)
         scores = [bet_label_score(text, canon) for text, _ in rows]
         if max(scores, default=0.0) > 0:
             return scores.index(max(scores)), rows
         texts = [text for text, _ in rows]
         if sum(1 for t in texts if nearest_bet_label(t)) >= F8_PAGE_MIN_ROWS and texts == last:
+            # Before the caller pages on, the old row-by-row read (~2 s) has its say: PgDn is pressed only when
+            # both readers agree the type isn't here (9.2455944, 28 Oct: Lucky 63, Betty went Home while paging)
+            x, y, w, h = F8_BET_LIST_REGION_1368
+            listed = shot.crop((x, y, x + w, y + h))
+            slow = [(re.sub(r'[^a-z0-9]', '', ocr_f8_row_text(r, listed).lower()), sel) for r, (_, sel) in enumerate(rows)]
+            scores = [bet_label_score(text, canon) for text, _ in slow]
+            if max(scores, default=0.0) > 0:
+                print(f"[*] Bet list: '{canon}' found by the row-by-row read (the one-pass read had {texts}).")
+                return scores.index(max(scores)), slow
+            print(f"[*] Bet list page has no '{canon}': {[nearest_bet_label(t)[0] if nearest_bet_label(t) else t for t in texts]}")
             return None, rows
         last = texts
         time.sleep(0.08)
+    # A blank list is often no list: Betty left the screen by itself just after F8 (9.2455944, 28 Oct: on Home twice)
+    screen = detect_screen()
+    if screen != SCREEN_BET_AND_STAKE:
+        raise WagerForStaff(f"Betty left Choose Bet and Stake (now on {screen}) while choosing '{canon}'")
     raise WagerForStaff(f"Betty's bet list could not be read while looking for '{canon}'")
 
 
@@ -5379,9 +5469,10 @@ def choose_bet_type(canon: str, extending: bool = False):
     key, label = ENTRY_BET_TYPES[canon]
 
     # Singles is selected by default on Betty when F8 opens: if already selected, nothing to do
-    initial_rows = _f8_rows(pyautogui.screenshot())
-    if canon == 'single' and initial_rows and initial_rows[0][1] and bet_label_score(initial_rows[0][0], canon) > 0:
-        return
+    if canon == 'single':
+        initial_rows = _f8_rows(pyautogui.screenshot())
+        if initial_rows and initial_rows[0][1] and bet_label_score(initial_rows[0][0], canon) > 0:
+            return
 
     if key:
         betty_press(key)
@@ -5390,8 +5481,12 @@ def choose_bet_type(canon: str, extending: bool = False):
         i, rows = _find_bet_row(canon)
         if i is not None:
             break
+        print(f"[*] '{canon}' isn't on this page of the bet list: PgDn.")
         betty_press('pagedown')  # the list pages round; bet types depend on the selections entered
         time.sleep(0.08)
+        screen = detect_screen()
+        if screen != SCREEN_BET_AND_STAKE:
+            raise WagerForStaff(f"Betty left Choose Bet and Stake (now on {screen}) after PgDn while choosing '{canon}'")
     else:
         raise WagerForStaff(f"Betty's bet list has no '{canon}' for these selections")
     if rows[i][0] != label:
@@ -5401,20 +5496,18 @@ def choose_bet_type(canon: str, extending: bool = False):
         betty_click(x + w // 2, int(y + (i + 0.5) * F8_ROW_HEIGHT_1368))
         time.sleep(0.05)
 
+    # Selecting a row doesn't change the list, so the rows' names are known: from here only the green is read
     if not extending:
-        for j, (text, selected) in enumerate(_f8_rows(pyautogui.screenshot())):
+        for j, selected in enumerate(_f8_selected(pyautogui.screenshot())):
             if selected and j != i:
-                print(f"[*] Deselecting '{text}' (only {canon} wanted).")
+                print(f"[*] Deselecting '{rows[j][0]}' (only {canon} wanted).")
                 betty_click(x + w // 2, int(y + (j + 0.5) * F8_ROW_HEIGHT_1368))
                 time.sleep(0.05)
-        rows = _f8_rows(pyautogui.screenshot())
-        chosen = [t for t, sel in rows if sel]
+        chosen = [rows[j][0] for j, sel in enumerate(_f8_selected(pyautogui.screenshot())) if sel]
         if chosen != [rows[i][0]]:
             raise WagerForStaff(f"could not select only {canon} in Betty's bet list (selected: {chosen})")
-    else:
-        rows = _f8_rows(pyautogui.screenshot())
-        if not rows[i][1]:
-            raise WagerForStaff(f"could not select {canon} in Betty's bet list for extended bet")
+    elif not _f8_selected(pyautogui.screenshot())[i]:
+        raise WagerForStaff(f"could not select {canon} in Betty's bet list for extended bet")
 
 
 def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None = None):

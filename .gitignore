@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+betty_paths.json
 
 # Console logs (kept on each PC for 30 days)
 logs/

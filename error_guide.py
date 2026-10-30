@@ -66,7 +66,7 @@ GUIDE: list[tuple[str, str, str, str]] = [
      CHECK_BY_HAND),
     (r"racecard feed can't be read|racecard feed not found|Betty racecard feed unavailable",
      "Racecards missing",
-     "Betty's racecard files for today (C:\\Events) can't be read, so no selection can be checked.",
+     "Betty's racecard files for today (its Events folder) can't be read, so no selection can be checked.",
      "Look at the Data tab. Betty normally writes these files itself: check Betty is running and has today's "
      "cards. Enter wagers by hand until it's fixed."),
     (r"bet type\(s\) the program can't enter yet",
@@ -118,6 +118,11 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "A line in Betty's betslip doesn't match the selection: the wrong race, SP instead of a price, or the other "
      "way round.",
      "Check that line against the slip and correct it by hand."),
+    (r"Betty left Choose Bet and Stake",
+     "Betty left the bet screen",
+     "All the selections were in and Choose Bet and Stake (F8) opened, then Betty went to another screen by itself "
+     "before the bet type was chosen.",
+     "Enter the wager by hand, and note what Betty showed if it happens again."),
     (r"bet list|for extended bet",
      "Bet type couldn't be chosen",
      "On Choose Bet and Stake, the bet type couldn't be found or selected in Betty's bet list.",

@@ -35,6 +35,11 @@ def env_file() -> str:
     return os.path.join(app_dir(), ".env")
 
 
+def betty_paths_file() -> str:
+    """Where Betty's drive was found on this till (betty_feed.save_betty_root), kept with this build."""
+    return os.path.join(app_dir(), "betty_paths.json")
+
+
 def find_tesseract() -> str | None:
     """
     The Tesseract to run: TESSERACT_CMD from .env, else the copy shipped with the program (tesseract/ next to the exe

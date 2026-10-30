@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.0.1] - 2026-10-30
+
+The fixes made after the first 1.0.0 build (tried on the tills from 28 Oct), the cashier tills' racecards, and a smaller build.
+
+### Fixed
+From the live log of 28 Oct, 15:29 (`dist/BettyCompanion/logs`): 9.2455858, slip `1 £2w 3.13` / `4 £2w Sund` / `1 x 4 x 5 £1 comb F/C`, £10.
+- **"Checking selections against Betty's card" took about 70 s.** `number_bet_is_dog` compared the meeting written ('Sund') with each of the card's 13,381 runners. A dogs-only meeting matches no horse, so every runner was compared. Each comparison is a fuzzy meetings-directory lookup of about 3 ms, plus a file check.
+  - It now compares each meeting once.
+  - `_meeting_matches` answers are cached for the wager (cleared at each pre-flight, because the day's dog card is part of the answer).
+  - The same slip now takes **0.2 s**.
+- **'1 £2w 3.13' (no meeting) was split over three horse races and sent to staff** ("200p can't be divided equally over 3 races"). Rule 1.8.4 took any race within 10 minutes of 3.13 and put horses first: Huntingdon 15:06, Nottingham 15:16 and Newton Abbot 15:21. A race at the very time written now wins first, whatever its kind: the Sunderland dogs at 15:13, the race the customer meant. The 10-minute window and horses first still apply when no race is at that exact time. The slip now locks as two £2 singles and a £1 combination forecast at Sunderland 15:13, £10.
+- **Each line of the session log starts with its time** (`15:35:25 [!] Wager ...`; user). Blank lines and the console are unchanged. The launcher's staff list reads both old and new lines. A wager found only in the log is now timed by its line when there's no screenshot.
+- Tests: `entry_cases` 33 (exact time → Sunderland; 3.10 → the horse races near it, split as before; 'Sund' on a 13,006-runner card decided in 0.4 s), `backend_cases` 3 (each line timed, blank lines not), `launcher_cases` 3 (a timed staff line).
+- **Choosing the bet type on Choose Bet and Stake (F8) took 11-15 s a bet**, the wait before F12 (9.2455887, 15:58: "Best odds" 15:58:12 → "Bet 1 entered" 15:58:23, then 15:58:34 → 15:58:49).
+  - The bet list was read with one Tesseract run per row, 11 a read and a second run for each blank row: about 2 s. `choose_bet_type` read it about 4 times.
+  - `_f8_texts` now reads the whole list in one pass, about 0.3 s. On every saved bet-list screen it reads the same 113 named rows as before.
+  - The first read is made only for Singles (the only type it decides).
+  - After the click, only the rows' green is checked (`_f8_selected`). Selecting doesn't change the list, so the names come from the one read.
+  - A bet type now takes about 0.5 s.
+- **Every FAO was reported as failed** ("still in the unedited list after Mark bet fao Manager": 9.2448529, 9.2452876, 9.2455486, 9.2455944). Betty marks the wager at once, but the wager only leaves the unedited list some time later (user). After the click, the program now looks for the large magenta **FAO MANAGER** on the wager's slip panel, by colour (`shows_fao_manager`), for up to 3 s.
+- **9.2455944 (Lucky 63 each way, 6 selections) went to staff three times with "Betty's bet list could not be read"**. Betty was on Home each time (16:17, 16:23, 16:32). The user watched it: the stake goes in, then Betty backs out while the bet list is being searched. Lucky 63 has no shortcut key, so the list is searched page by page with PgDn. The cause isn't proven; the likely one is that the new one-pass read missed Lucky 63 on page 1, so PgDn was pressed.
+  - Before PgDn, the page is now read again row by row (the old reader). PgDn is pressed only when both readers agree the type isn't there.
+  - The log names the rows read whenever it pages on.
+  - After PgDn the screen is checked. Leaving Choose Bet and Stake is now reported as "Betty left Choose Bet and Stake (now on HOME) ...", not as an unreadable list. There's an `error_guide` entry for it.
+- **The events screen is passed with `1` on every till** (to-do: "the cashiers' tills won't take `/` on the events screen"). After End (Edit Empty Bet), `open_race_entry` presses `1` to go past the events screen to race entry, then `/` for the time box. It's the same on every till, the manager's included (user). `/` is no longer pressed on the events screen at all. `1` is pressed again only while the events screen still shows (it can be missed while the screen draws), up to 3 times.
+- **The cashiers' tills found no racecards** ("Betty racecard feed not found"). They have no `C:\Events` or `C:\DBF`: their Betty reads the manager till's (Betty 0's) `C:\`, which is shared as `drvc` and mapped as a network drive (`F:` at South Oxhey, the cashier till's `net use`). The program only ever looked on `C:\`.
+  - `betty_feed.betty_root()` finds the drive holding both `Events` and `DBF`: `C:\`, then `D:` to `Z:`, then the share itself (`\\PC\drvc`, `BETTY_SHARE`) when no letter is mapped. The race cards, the off slips (`transact.DBF`), the Data tab and the readiness light all use it.
+  - **Found once, then saved** (user): the first launch after the till is paired, or the moment it's paired, saves the drive to `betty_paths.json` next to the exe, for that build on that till. Later runs use it straight away. A new build finds it again.
+  - If the saved drive can't be reached (F: not reconnected yet after a reboot), that run uses whatever drive it can find, `\\PC\drvc` included, and keeps the saved file. If nothing is found, the launcher lists an error, and the program looks again every 30 s.
+  - `BETTY_EVENTS_DIR` / `BETTY_DBF_DIR` in `.env` still override it.
+  - The Data tab says which folder the cards come from ("4 file(s) in F:\Events, ...").
+  - Tested on the manager till: `C:\` saved; a cashier-style drive saved and reused; the saved drive gone → the real cards read over `\\PC\drvc` (7,088 runners, 299 off slips) with the save kept; nothing found; the folder not writable; `.env` override.
+- The tills only get this in a new build (`python build_release.py`). The snapshot `previous_versions/betty_companion_v1.0.0.py` is the first build's code.
+
+### Changed
+- **The build is 9 MB smaller** (91 MB, zip 38 MB). Left out because nothing uses them: setuptools (PyInstaller's hook), numpy's test tools and the `win32pdh` module they bring in, and Pillow's AVIF, WebP and colour-profile support. `exe_cases` passes on the trimmed build; it now expects this PC's relay pairing and checks that the window saves Betty's drive.
+
 ## [1.0.0] - 2026-10-28
 
 The first release as a portable Windows program: `BettyCompanion-1.0.0.zip`. Unzip it and double-click `BettyCompanion.exe`; nothing is installed. It replaces `bettycomplaunch.bat`. Running `python betty_companion.py` still works as before.
