@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.1.0] - 2026-10-30
+
+The to-do list (`todolist.md`), all three items.
+
+### Added
+- **A race time is typed once for every selection on Betty's runner list for that time.** Since 26 Oct a second runner in the same race was chosen from the list still showing; now a selection at another meeting at the same time is too: 'right' on from the list showing to its meeting, no time typed (`after_same_time`, `same_race_time`: the same time on Betty's 12-hour clock). If the list has already passed that meeting, it ends (Betty's folders) and the time is typed after all, as before. Selections stay in the order written, so forecasts keep their order. The time-typing steps are one helper (`_type_race_time`).
+
+### Checked
+- **'PP' with a time is Portman Park**: 'No 1 2.11 PP' and a misspelt name with 'PP' both lock to Portman Park 14:11 on the 20 Oct card. **The house rules before giving up**: '4 1.50 Chepstow' with no Chepstow race then goes on #4 in the 1:50 at Newmarket (Rule 1.8.4, the time takes precedence). Both already worked; both are now tests (`review_fixes_cases`), and 1.0.2's meeting and rules fixes cover the cases around them.
+- Tests: `entry_cases` section 28b (the list reused for another meeting at the same time, and the fallback when it has passed), and `enter_wager` choosing it.
+
 ## [1.0.2] - 2026-10-30
 
 The open risks from the code review (`scratch/code_review_2026-10-28.md`, IDs kept). Each fix has a check in `scratch/ocr_eval/review_fixes_cases.py` (new, 42 checks). Every other suite passes as before; the `--ideal` self-test replays the same as 1.0.1 (11/13: paul2 and petea, "no day fits", as before).

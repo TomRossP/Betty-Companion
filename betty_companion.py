@@ -1,4 +1,4 @@
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -5006,6 +5006,15 @@ def enter_favourite(horse: dict, already_on_slip: int):
     print(f"[+] Betslip line {got['n']}: {got['meeting']} {got['time']} {got['name']} {got['price']} (checked)")
 
 
+def same_race_time(a: dict, b: dict) -> bool:
+    """Whether two selections are on one runner list of Betty's: the same time on its 12-hour clock (typing 6:58 lists
+    the 06:58 virtuals beside the 18:58 races). The favourite goes through the folders, never the list."""
+    if a.get('favourite') or b.get('favourite'):
+        return False
+    ta, tb = clock_12h(str(a.get('time') or '')), clock_12h(str(b.get('time') or ''))
+    return bool(ta) and ta == tb
+
+
 def same_race(a: dict, b: dict) -> bool:
     """Whether two selections are in one race of Betty's runner list (meeting, time, horses or dogs), so the second
     can be chosen from the list the first was entered from. The favourite goes through the folders, never the list."""
@@ -5091,11 +5100,14 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
             time.sleep(0.1)
 
 
-def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = False):
+def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = False, after_same_time: bool = False):
     """
     Adds one locked selection to the current betting slip and confirms it on the betslip read-back. After a selection
     in the same race (`after_same_race`), it is chosen from the runner list still showing, with no time typed again
-    (user, 26 Oct: '1:17 Romford 3-4 S/F/C' is the 1:17 once, then 3 + Enter, 4 + Enter).
+    (user, 26 Oct: '1:17 Romford 3-4 S/F/C' is the 1:17 once, then 3 + Enter, 4 + Enter). After one at the same time
+    at another meeting (`after_same_time`), the list still showing is that time's: 'right' on from it to the meeting
+    (to-do, 30 Oct: the time was typed again for every selection). A meeting the list has already passed ends it, and
+    the time is typed after all.
     """
     if horse.get('favourite'):
         return enter_favourite(horse, already_on_slip)
@@ -5118,13 +5130,17 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
             and _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds) == meeting):
         print(f"[*] {meeting} {clock_12h(hhmm)} is still showing: no time typed.")
     else:
-        box_open = _signals_pass(np.array(img.convert('RGB')), [RACE_ENTRY_TIME_BOX])
-        if screen != SCREEN_RACE_ENTRY_READY and not (screen == SCREEN_UNKNOWN and box_open):
-            betty_press('/')  # '/' toggles: pressed only when the yellow time box is not already showing
-        # The time follows '/' at once: Betty keeps keys pressed before it has drawn the box (user, 26 Oct)
-        _type_text(format_time_for_betty(hhmm))
-        screen = expect_screen({SCREEN_RACE_LIST, SCREEN_RACE_ENTRY_EXHAUSTED}, doing=f"runner list for {hhmm}")
+        reuse = after_same_time and screen == SCREEN_RACE_LIST
+        if reuse:
+            print(f"[*] The {clock_12h(hhmm)} runner list is still showing: no time typed.")
+        else:
+            screen = _type_race_time(img, screen, hhmm)
         for _ in range(MAX_MEETING_STEPS):
+            if screen == SCREEN_RACE_ENTRY_EXHAUSTED and reuse:  # passed it: from the start of the list after all
+                print(f"[*] {meeting} wasn't further along the {clock_12h(hhmm)} runner list: typing the time.")
+                reuse = False
+                img = pyautogui.screenshot()
+                screen = _type_race_time(img, detect_screen(img), hhmm)
             if screen == SCREEN_RACE_ENTRY_EXHAUSTED:
                 raise WagerForStaff(f"{meeting} {clock_12h(hhmm)} is not in Betty's runner list")
             top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds)
@@ -5170,6 +5186,17 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
     if problems:
         raise WagerForStaff(f"betslip shows {', '.join(problems)} for {label}")
     print(f"[+] Betslip line {got['n']}: {got['meeting']} {got['time']} {got['number']}. {got['name']} {got['price']} (checked)")
+
+
+def _type_race_time(img: Any, screen: str, hhmm: str) -> str:
+    """'/' for the yellow time box when it isn't showing, the race time, and the runner list it brings up (or the end
+    of the list when Betty has no race then)."""
+    box_open = _signals_pass(np.array(img.convert('RGB')), [RACE_ENTRY_TIME_BOX])
+    if screen != SCREEN_RACE_ENTRY_READY and not (screen == SCREEN_UNKNOWN and box_open):
+        betty_press('/')  # '/' toggles: pressed only when the yellow time box is not already showing
+    # The time follows '/' at once: Betty keeps keys pressed before it has drawn the box (user, 26 Oct)
+    _type_text(format_time_for_betty(hhmm))
+    return expect_screen({SCREEN_RACE_LIST, SCREEN_RACE_ENTRY_EXHAUSTED}, doing=f"runner list for {hhmm}")
 
 
 def betslip_runner_by_name(name: str, horse: dict) -> dict | None:
@@ -5720,7 +5747,9 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
         if not (idx and same_selections(bet, plan[idx - 1][0])):
             horses = bet.get('horses', [])
             for k, horse in enumerate(horses):
-                enter_selection(horse, k, after_same_race=k > 0 and same_race(horse, horses[k - 1]))
+                after_race = k > 0 and same_race(horse, horses[k - 1])
+                enter_selection(horse, k, after_same_race=after_race,
+                                after_same_time=k > 0 and not after_race and same_race_time(horse, horses[k - 1]))
             apply_guarantees(bet.get('horses', []), struck_clock)
             # No whole-betslip re-read here (user, 26 Oct): every line was read back as it was entered and every
             # guarantee confirmed by its colour; the re-read failed on good slips (9.2452710). Payment is checked at F12.
