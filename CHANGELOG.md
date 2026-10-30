@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.0.2] - 2026-10-30
+
+The open risks from the code review (`scratch/code_review_2026-10-28.md`, IDs kept). Each fix has a check in `scratch/ocr_eval/review_fixes_cases.py` (new, 42 checks). Every other suite passes as before; the `--ideal` self-test replays the same as 1.0.1 (11/13: paul2 and petea, "no day fits", as before).
+
+### Fixed
+- **R3: the betslip check compared only 3 letters of the meeting.** Newcastle, Newmarket and Newton Abbot are all "new", and a dog line shows only "Trap N", so a dog bet on the wrong track passed. Betty's 4 letters must match now, or be one letter off (an OCR slip) only when no other meeting racing then is as near (`_meeting_label_fits`).
+- **R4: short meeting shorthands matched as prefixes.** "Hamburg" was Hamilton, "Donegal" Doncaster, "Perry B" Perth, "Wollong" Wolverhampton. A shorthand of 3 letters now matches only when written exactly; a name the dog or international lists know in full is tried before the loose horse matching ("Perry B" is Perry Barr).
+- **R5: horse names decided the bet type.** "Double on Pat's Pride & Beta" read as a patent, "£1 win Union Jack Rose" as a union jack. The bet's own selection names are taken out of its description first (`selection_names`).
+- **R7: the staff detector could fail without a word.** Its hooks now only set flags (the message goes out on another thread; mouse movements take no lock), so Windows doesn't drop them for being slow. A hook that doesn't install is reported, with a sound and an Errors-tab entry.
+- **R8: a wager with two navigation failures was left without a sound or FAO.** It now goes through the normal "leave for staff" (FAO in live mode, screenshot, sound). A wager stopped part-way (Esc) is journalled and announced.
+- **R1: with no written total, the each-way healer flipped the first bet that fitted.** With two bets of the same cost either fits, and the wrong one went on each way. It now flips only when exactly one bet fits; otherwise the money check sends the slip to staff.
+- **R9: in test mode, a wager staff placed could be logged "cancelled"** when Betty went to Home after F12. View Wagers is opened and the list looked at first.
+- **R10: a forecast or tricast with no selection on the card was voided**, against the rules file's "enter as written, Betty settles" (as it already did for one or two). It is entered as written.
+- **R11: an unnamed favourite each way was made win only**, so it never cost what was paid and always went to staff. It is entered each way as written; Betty voids the place part at settlement (the house rule).
+- **R12: trap bets judged "already off" without Betty's off times** when the card had been re-read since pre-flight. The dog card is marked afresh at the trap check.
+- **R13: a selection read with a number but no name was dropped.** It is a number bet ("5").
+- **R14: a bet with no line number was paired with any line saying "doub", "treb" or "acc".** Only its own type's words count now.
+- **R15: two singles on the same horse became one.** The repeat stays a single of its own. The two copies of the singles merge are now one (`_merge_singles`, review T3).
+- **R16: two rules fitted to particular slips.** A "dreb" bet is dropped only when a treble with the same stake, terms and runners exists; two doubles merge into "3 x Doubles" only on a written "3 x", not any "3".
+- **R17: made-up line numbers were trusted** by the "runners below a bet line" guard. They are marked, and the guard stands aside when any line number was guessed.
+- **R18: stake entry details.** 8 backspaces clear the last stake (5 cleared only £999.99); a short wait before the each-way button is read; the `except TypeError` retry that would deselect the other bets is gone; Singles already selected returns early only when nothing else is selected.
+- **R19: `load_wager` clicked the old row when the wager had left the list.** It stops (the next look takes the next wager).
+- **R20: amounts with a thousands comma ("£1,000.00") didn't read** on View Wagers, the betslip or the slip.
+- **R22: 9, 10 and 11 o'clock stayed morning** for number bets, Rule 1.8.4 and the runner list ("No 4 9.40" for the 21:40 dogs found nothing). Both are tried (`race_time_options`), as trap bets already did.
+- **R24: a stake read as empty crashed the rules engine.**
+- **R25: the 1-8 trap range was applied to horses** written as a bare number (horse number 12 isn't "Trap 12").
+- **R26: an unknown bet type was costed as 1 line silently.** It says so.
+- **R27: a race in two feeds was listed twice** when one feed had dropped a non-runner. Same time and all runners but one (4+) is the same race.
+- **R28: Betty's folder name followed the Windows language** (`%A`). English day names (`betty_day_name`).
+- **R30: a broken `meetings_directory.json` was re-read on every lookup and lost its shorthands.** The last good directory is kept until the file changes.
+- R23 (two log folders) was settled by 1.0.0 (every log in `logs` next to the program). R29 (the feed year letter after 2027) stays a note: what Betty uses can only be seen in January 2028.
+- New Errors-tab entries: staff detector not working, Betty's screens kept going wrong, wager stopped part-way, wager already taken.
+- Tests: `reader_cases` and `exe_cases` now allow for this PC being paired with the relay (since 28 Oct); `entry_cases` fakes `betty_day_name`.
+
 ## [1.0.1] - 2026-10-30
 
 The fixes made after the first 1.0.0 build (tried on the tills from 28 Oct), the cashier tills' racecards, and a smaller build.

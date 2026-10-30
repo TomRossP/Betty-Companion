@@ -184,6 +184,13 @@ def decode_feed(data: bytes) -> list[dict]:
     return races
 
 
+def _same_race(a: frozenset, b: frozenset) -> bool:
+    """Two feeds' races at one time are the same race: the same runners, or all but one when one feed has dropped a
+    non-runner (4+ runners, as virtual races reuse names; review R27: the race was listed twice)."""
+    small = min(len(a), len(b))
+    return a == b or (small >= 4 and len(a & b) >= small - 1 and abs(len(a) - len(b)) <= 1)
+
+
 class BettyFeedCard:
     """Today's runners from Betty's local feeds, re-read whenever a feed file changes."""
 
@@ -258,7 +265,7 @@ class BettyFeedCard:
         if signature == self._signature:
             return self._runners
 
-        runners, seen_races = [], set()
+        runners, seen_races = [], {}  # time -> runner-name sets of the races read at that time
         for path in paths:
             try:
                 with open(path, "rb") as f:
@@ -267,10 +274,10 @@ class BettyFeedCard:
                 print(f"[-] Betty feed: could not read {os.path.basename(path)}: {e}")
                 continue
             for race in races:
-                race_key = (race["time_str"], frozenset(n.lower() for n in race["runners"] if n))
-                if race_key in seen_races:
+                names = frozenset(n.lower() for n in race["runners"] if n)
+                if any(_same_race(names, seen) for seen in seen_races.get(race["time_str"], ())):
                     continue  # same race already read from a higher-priority feed (or a Tote pool alias)
-                seen_races.add(race_key)
+                seen_races.setdefault(race["time_str"], []).append(names)
                 category = self._category(race["meeting"], race["country"])
                 meeting = re.sub(r"\d+$", "", race["meeting"]).strip() if category == "virtual" else race["meeting"]
                 for cloth, name in enumerate(race["runners"], start=1):

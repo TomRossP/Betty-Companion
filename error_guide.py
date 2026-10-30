@@ -132,6 +132,25 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Betty showed a payment question while selections were being entered. The program never answers these.",
      "Look at Betty's question and finish the wager by hand."),
     # --- The watcher ---
+    (r"Staff detector didn't start",
+     "Staff detector not working",
+     "Windows didn't let the program watch the keyboard and mouse, so it can't tell when staff use the till. It "
+     "could type into Betty while someone else is using it.",
+     "Stop the watcher, close Betty Companion and open it again. Until then, don't use the till while it runs."),
+    (r"screens went wrong twice while entering it",
+     "Betty's screens kept going wrong",
+     "Twice in a row, Betty didn't show what the program expected while it was entering this wager, so it was left "
+     "for staff (marked FAO in live mode).",
+     CHECK_BY_HAND),
+    (r"left unedited part-way",
+     "Wager stopped part-way",
+     "The watcher was stopped (Esc) or hit a problem while this wager was open, so it was left unedited and not "
+     "marked FAO.",
+     "Open the wager in Betty and check it: finish it by hand, or back out without saving."),
+    (r"no longer in the unedited list",
+     "Wager already taken",
+     "The wager left the unedited list before the program opened it: someone else is dealing with it.",
+     "Nothing to do. The watcher moves on to the next wager."),
     (r"Could not get Betty back to Home|could not get back to Home",
      "Betty is stuck on a screen",
      "The watcher couldn't get Betty back to the Home screen, so it switched itself off.",

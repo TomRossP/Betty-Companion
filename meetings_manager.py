@@ -191,6 +191,14 @@ DEFAULT_DOMESTIC_HORSE_COURSES = {
 }
 
 
+def _prefix_fits(written: str, key: str) -> bool:
+    """A written meeting (letters and digits) is this alias: the same, the start of it, or running on from an alias of
+    4+ letters. 4+ letters written either way."""
+    if len(written) < 4:
+        return False
+    return written == key or key.startswith(written) or (len(key) >= 4 and written.startswith(key))
+
+
 class MeetingsDirectoryManager:
     """
     Centralized directory manager for Betty Companion.
@@ -282,6 +290,12 @@ class MeetingsDirectoryManager:
 
             except Exception as e:
                 print(f"[-] MeetingsDirectoryManager: Error loading {self.config_path}: {e}")
+                try:  # not read again until the file changes; the last good directory stays in use (review R30)
+                    self._last_mtime = os.path.getmtime(self.config_path)
+                except OSError:
+                    pass
+                if getattr(self, "course_alias_map", None):
+                    return
 
         self.course_alias_map = new_aliases
 
@@ -399,10 +413,19 @@ class MeetingsDirectoryManager:
         if clean in self.greyhound_map:
             return "greyhound", self.greyhound_map[clean]
 
-        # 5. Check prefix / substring matches for domestic horse courses
+        # 5. Check prefix / substring matches for domestic horse courses. A written name begins a course name, or
+        # runs on from a shorthand of 4+ letters: 'ham' must not make Hamburg Hamilton, nor 'don' Donegal Doncaster
+        # (review R4)
         for k, v in self.course_alias_map.items():
-            if len(clean) >= 4 and (clean == k or clean.startswith(k) or k.startswith(clean)):
+            if _prefix_fits(clean, k):
                 return "horse", v
+
+        # 5. (cont.) A name the dog or international lists know in full ('Wollong' for Wollongong) before the loose
+        # horse matching below can take it for a course ('Wolverhampton'; review R4)
+        for kind, table in (("greyhound", self.greyhound_map), ("international", self.international_map)):
+            for k, v in table.items():
+                if len(clean) >= 5 and k.startswith(clean):
+                    return kind, v
 
         # 5a. A virtual track's name begun or run on (4+ letters: 'Steeple', 'Sprintvalley2'), after the courses so
         # 'Sand' stays Sandown, not Sandy Lanes
@@ -417,7 +440,7 @@ class MeetingsDirectoryManager:
 
         # 6. Check Greyhound Tracks prefix matches
         for k, v in self.greyhound_map.items():
-            if len(clean) >= 4 and (clean == k or clean.startswith(k) or k.startswith(clean)):
+            if _prefix_fits(clean, k):
                 return "greyhound", v
 
         # Strict fuzzy match for greyhounds (0.85 threshold to avoid Listowel -> Towcester)
@@ -427,7 +450,7 @@ class MeetingsDirectoryManager:
 
         # 7. Check International Meetings prefix matches
         for k, v in self.international_map.items():
-            if len(clean) >= 4 and (clean == k or clean.startswith(k) or k.startswith(clean)):
+            if _prefix_fits(clean, k):
                 return "international", v
 
         return "unknown", raw_meeting

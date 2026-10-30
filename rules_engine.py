@@ -141,7 +141,33 @@ def parse_race_time_to_minutes(time_str: str) -> tuple[int | None, str | None]:
     return None, None
 
 
-def normalize_bet_type(bet_type: str, desc: str = "") -> str:
+def race_time_options(time_str: str) -> set[int]:
+    """
+    The minutes from midnight a written time can mean. 9, 10 and 11 o'clock can be morning or evening on a 12-hour
+    slip ('No 4 9.40' for the 21:40 dogs), so both; 1-8 are afternoon (parse_race_time_to_minutes). Empty if unreadable.
+    """
+    mins, _ = parse_race_time_to_minutes(time_str)
+    if mins is None:
+        return set()
+    return {mins, mins + 720} if 540 <= mins < 720 else {mins}
+
+
+def selection_names(bet: dict) -> list[str]:
+    """The names of a bet's selections, for normalize_bet_type to leave out of its description."""
+    return [str(h.get('name') or '') for h in bet.get('horses', []) if isinstance(h, dict)]
+
+
+def _without_names(text: str, names) -> str:
+    """`text` with each selection name taken out (apostrophes ignored), so a name never decides the bet type."""
+    text = re.sub(r"['’]", "", text)
+    for name in names or ():
+        words = re.findall(r"[a-z0-9]+", re.sub(r"['’]", "", str(name).lower()))
+        if words and len("".join(words)) >= 3:
+            text = re.sub(r"\b" + r"\W*".join(map(re.escape, words)) + r"\b", " ", text)
+    return text
+
+
+def normalize_bet_type(bet_type: str, desc: str = "", names=()) -> str:
     """
     Normalizes customer slang, abbreviations, and ligatures into canonical UK bet type strings.
     e.g. 'rfc', 'r/f/c', 'reversed f/c' -> 'reversed forecast'
@@ -149,8 +175,10 @@ def normalize_bet_type(bet_type: str, desc: str = "") -> str:
          'cfc', 'c/f/c', 'comb f/c'      -> 'combination forecast'
          'l15', '4 l15'                 -> 'lucky 15'
          'l31', '5 l31'                 -> 'lucky 31'
+    `names`: the bet's selection names (selection_names), taken out of `desc` first: 'Double on Pat's Pride & Beta'
+    is a double, not a patent; '£1 win Union Jack Rose' a single, not a union jack (review R5).
     """
-    raw = f"{bet_type} {desc}".lower().strip()
+    raw = f"{bet_type} {_without_names(str(desc).lower(), names)}".lower().strip()
 
     # Forecasts (incl. forecast doubles and 'r/f/cast' / 's/f/cast' shorthand):
     fc_type = match_forecast_bet_type(raw)
@@ -315,7 +343,7 @@ def calculate_bet_cost_pence(bet: dict) -> int:
             unit_stake = 0
     if unit_stake is None:
         unit_stake = 0
-    b_type = normalize_bet_type(str(bet.get('bet_type', 'single')), str(bet.get('description', '')))
+    b_type = normalize_bet_type(str(bet.get('bet_type', 'single')), str(bet.get('description', '')), selection_names(bet))
     desc = str(bet.get('description', '')).lower()
     raw_text = str(bet.get('raw_text', '')).lower()
     combined_desc = f"{desc} {raw_text}"
@@ -379,7 +407,10 @@ def calculate_bet_cost_pence(bet: dict) -> int:
 
     # 4. System bets line count lookup from UK_BETTING_GLOSSARY:
     if cost is None:
-        lines = UK_BETTING_GLOSSARY.get(b_type) or LINES_PER_BET_TYPE.get(b_type, 1)
+        lines = UK_BETTING_GLOSSARY.get(b_type) or LINES_PER_BET_TYPE.get(b_type)
+        if lines is None:  # the money check then decides; say why the cost may be wrong (review R26)
+            print(f"[-] Bet type '{b_type}' isn't known: costed as 1 line.")
+            lines = 1
         cost = unit_stake * lines * ew_mult
 
     bet['total_stake_pence'] = cost
@@ -543,7 +574,8 @@ def is_selection_existent(horse: dict, runners: list[dict] | None = None, rules_
     # 2. Greyhound trap validation (max_greyhound_traps in bookmaker_rules.json: UK/IE races have 6, Australian 8)
     is_dog, trap_num, _ = is_greyhound_or_trap_selection(horse)
     effective_trap = trap_num if trap_num is not None else (num if isinstance(num, int) else None)
-    if is_dog or (effective_trap is not None and ('trap' in name or name.isdigit())):
+    # A selection written as a bare number is a trap only when it's a dog: horse number 12 is no 'Trap 12' (review R25)
+    if is_dog or (effective_trap is not None and 'trap' in name):
         if effective_trap is not None and (effective_trap < 1 or effective_trap > max_traps):
             return False, f"Trap {effective_trap} does not exist ({firm}: greyhound races have at most {max_traps} traps)"
 
@@ -635,13 +667,13 @@ def resolve_same_race_contingencies(
 
     for bet in slip_data:
         horses = bet.get('horses', [])
-        stake = bet.get('stake_pence', 0)
+        stake = int(bet.get('stake_pence') or 0)
         each_way = bool(bet.get('each_way', False))
         desc = str(bet.get('description', ''))
         raw_text = str(bet.get('raw_text', ''))
         combined_desc = f"{desc} {raw_text}".lower()
         # Canonical type (e.g. 'doubles' + 'R/FORECAST ... X DOUBS' = reversed forecast double, which never clashes)
-        b_type = normalize_bet_type(str(bet.get('bet_type', 'single')), combined_desc)
+        b_type = normalize_bet_type(str(bet.get('bet_type', 'single')), combined_desc, selection_names(bet))
 
         # Singles, bets with <= 1 horse, or Forecast/Tricast bets cannot clash
         if len(horses) <= 1 or b_type == 'single' or 'forecast' in b_type or 'tricast' in b_type or 'fc' in b_type:
@@ -825,8 +857,9 @@ def resolve_discrepancies(
 
     for bet in slip_data:
         horses = bet.get('horses', [])
-        b_type = normalize_bet_type(str(bet.get('bet_type', 'single')), str(bet.get('description', '')))
-        stake = bet.get('stake_pence', 0)
+        b_type = normalize_bet_type(str(bet.get('bet_type', 'single')), str(bet.get('description', '')),
+                                    selection_names(bet))
+        stake = int(bet.get('stake_pence') or 0)  # read as empty (null): no stake, not a crash (review R24)
         each_way = bool(bet.get('each_way', False))
         total_cost = calculate_bet_cost_pence(bet)
 
@@ -838,11 +871,12 @@ def resolve_discrepancies(
             cite_str = f" ({cite})" if cite else ""
             if act in ["VOID_PLACE_ELEMENT_SETTLE_WIN_ONLY", "VOID_PLACE_ELEMENT"]:
                 fav_names = [h.get('name') for h in horses if is_unnamed_favourite(h)]
+                # Entered each way as written and paid: Betty voids the place part and refunds it when it settles.
+                # Made win only here, the bet no longer cost what was paid and always went to staff (review R11).
                 print(f"\n[!] {firm} House Rules{cite_str}: Unnamed favourite ({fav_names}) is Win-Only.")
-                print("    -> Place part is void win or lose. Bet converted to Win Only.")
-                bet['each_way'] = False
-                each_way = False
-                notify(f"{firm} Rules{cite_str}: Favourites ({', '.join(fav_names)}) are Win-Only. EW place voided.", False, "#E65100")
+                print("    -> Entered each way as written; the place part is void and Betty refunds it at settlement.")
+                notify(f"{firm} Rules{cite_str}: Favourites ({', '.join(fav_names)}) are Win-Only: the EW place part is "
+                       "void at settlement.", False, "#E65100")
 
         # -------------------------------------------------------------
         # 2. UNINSTRUCTED SLIPS
@@ -1009,7 +1043,7 @@ def resolve_discrepancies(
                         notify(f"{firm} Rules{cite_str}: Invalid runner in Forecast. Converted to {total_cost}p Single on {rem_h.get('name')}.", False, "#E65100")
                         continue
                     elif act in ["CONVERT_TO_WIN_SINGLE_UNIT_STAKE", "SINGLE_UNIT_STAKE"]:
-                        u_stake = bet.get('stake_pence', 0)
+                        u_stake = int(bet.get('stake_pence') or 0)
                         print(f"\n[!] {firm} House Rules{cite_str}: Forecast contains non-existent selection(s): {inv_desc}.")
                         print(f"    -> Converted to Win Single on '{rem_h.get('name')}' at unit stake ({u_stake}p).")
                         first_pass_bets.append({
@@ -1027,9 +1061,13 @@ def resolve_discrepancies(
                         continue
 
                 elif len(valid_horses) == 0:
-                    print(f"\n[!] {firm} House Rules{cite_str}: All selections in Forecast are non-existent. Bet is void.")
-                    notify(f"{firm} Rules{cite_str}: All forecast selections non-existent. Bet void.", True, None)
-                    continue
+                    if act != "ENTER_AS_WRITTEN_BETTY_SETTLES":
+                        print(f"\n[!] {firm} House Rules{cite_str}: All selections in Forecast are non-existent. Bet is void.")
+                        notify(f"{firm} Rules{cite_str}: All forecast selections non-existent. Bet void.", True, None)
+                        continue
+                    # As for one invalid selection: entered as written (void selections), Betty settles (review R10)
+                    print(f"\n[!] {firm} House Rules{cite_str}: No selection in this Forecast is on the card. Entered as "
+                          "written; Betty settles.")
 
             first_pass_bets.append(bet)
             continue
@@ -1117,9 +1155,15 @@ def resolve_discrepancies(
                         continue
 
                 elif len(valid_horses) == 0:
-                    print(f"\n[!] {firm} House Rules: All selections in Tricast non-existent. Bet is void.")
-                    notify(f"{firm} Rules: All tricast selections non-existent. Bet void.", True, None)
-                    continue
+                    act, cite = mgr.get_state_action("STATE_TRICAST_TWO_NON_RUNNERS")
+                    cite_str = f" ({cite})" if cite else ""
+                    if act != "ENTER_AS_WRITTEN_BETTY_SETTLES":
+                        print(f"\n[!] {firm} House Rules{cite_str}: All selections in Tricast non-existent. Bet is void.")
+                        notify(f"{firm} Rules{cite_str}: All tricast selections non-existent. Bet void.", True, None)
+                        continue
+                    # As for one or two invalid selections: entered as written, Betty settles (review R10)
+                    print(f"\n[!] {firm} House Rules{cite_str}: No selection in this Tricast is on the card. Entered as "
+                          "written; Betty settles.")
 
             # 4c. Repeated selection in tricast
             unique_h = []

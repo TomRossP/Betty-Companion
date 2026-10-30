@@ -1,4 +1,4 @@
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -188,6 +188,8 @@ from rules_engine import (
     is_unnamed_favourite,
     is_greyhound_or_trap_selection,
     calculate_bet_cost_pence,
+    race_time_options,
+    selection_names,
 )
 
 # Betty local racecard feeds (C:\Events)
@@ -706,7 +708,8 @@ def match_trap_on_dog_card(track: str, written_time: str, trap: int, struck_mins
         return None
     times = {mins} | ({mins + 720} if mins < 720 else set())
     want = re.sub(r'[^a-z]', '', track.lower())[:4]
-    hits = [r for r in greyhound_card.get_runners()
+    # marked afresh: the card may have been re-read since pre-flight marked it, and a dog race running late isn't off
+    hits = [r for r in race_offs.mark(greyhound_card.get_runners())
             if r.get('number') == trap and r.get('minutes') is not None
             and re.sub(r'[^a-z]', '', r['meeting'].lower())[:4] == want
             and any(abs(r['minutes'] - t) <= DOG_TIME_AGREE_MINS for t in times)
@@ -921,6 +924,12 @@ def match_runner_to_racecard(horse: dict, runners: list[dict], slip_meetings: se
     return False, None, top3
 
 
+def written_race_times(horse: dict) -> set[int]:
+    """Every time (minutes from midnight) a selection's written time can mean: 9-11 o'clock morning or evening
+    (race_time_options), so 'No 4 9.40' finds the 21:40 dogs too (review R22)."""
+    return set().union(*(race_time_options(str(horse.get(k) or '')) for k in ('raw_time', 'time')))
+
+
 def selection_number(horse: dict) -> int | None:
     """Cloth / trap number when a selection is written as a number instead of a name ('No 8', '#4', 'T3', '5')."""
     m = re.match(r'^(?:no\.?|n\.?|#|trap|tr|t\.?|cloth)?\s*(\d{1,2})$', str(horse.get('name') or '').strip(), re.IGNORECASE)
@@ -954,7 +963,7 @@ def match_number_to_racecard(horse: dict, runners: list[dict], struck_mins: floa
     number = selection_number(horse)
     if number is None:
         return False, None, []
-    times = {m for m, _ in (parse_race_time_to_minutes(str(horse.get(k) or '')) for k in ('raw_time', 'time')) if m is not None}
+    times = written_race_times(horse)
     hinted = _hinted_meeting(horse)
     hinted_cat = _hinted_tier(hinted)
     order = ([hinted_cat] if hinted_cat else []) + [c for c in CATEGORY_ORDER if c != hinted_cat]
@@ -1021,7 +1030,7 @@ def unnamed_by_timing_rule(horse: dict, pools: list[list[dict]], struck_mins: fl
         return [], ''
     clock = time.localtime()
     now = struck_mins if struck_mins is not None else clock.tm_hour * 60 + clock.tm_min + clock.tm_sec / 60
-    times = {m for m, _ in (parse_race_time_to_minutes(str(horse.get(k) or '')) for k in ('raw_time', 'time')) if m is not None}
+    times = written_race_times(horse)
 
     def fits(r: dict, window: int = TIME_AGREE_MINS) -> bool:
         return any(abs(r['minutes'] - m) <= window for m in times)
@@ -1179,11 +1188,16 @@ def trap_by_dog_rules(horse: dict, dogs: list[dict], struck_mins: float | None, 
                                 "UK dog race to go off")
 
 
+def without_thousands_commas(text: str) -> str:
+    """'£1,000.00' -> '£1000.00': money read with a thousands comma didn't parse (review R20)."""
+    return re.sub(r'(?<=\d),(?=\d{3}(?!\d))', '', text or '')
+
+
 def parse_currency_string_to_pence(raw_str: str) -> int | None:
     """Parses customer written currency strings like '60 -', '7 - 00', '7.00', '£7', '14 - 50', '50p' into pence."""
     if not raw_str:
         return None
-    raw = raw_str.strip().lower()
+    raw = without_thousands_commas(raw_str.strip().lower())
 
     # 1. Pounds and pence separated by dash, dot, or colon, optionally followed by 'p' (e.g. '7 - 00', '7 - 50p', '7.00',
     # '14-50', '£2.50'; '6 : 20' in the Lucky 15/31/63 coupon's Total Stake box, its colon printed)
@@ -1486,6 +1500,7 @@ def recover_unemitted_interleaved_bets(
                     break
             if s.get('line_num') is None:
                 s['line_num'] = (s_idx + 1) * 2
+                s['_line_guessed'] = True  # not read: the causality guard ignores the order (review R17)
 
     # Track existing lines and existing bet descriptions to prevent duplicate restoration
     existing_lines = set()
@@ -1544,7 +1559,7 @@ def recover_unemitted_interleaved_bets(
                 ex_line = ex.get('line_num')
                 if ex_line is not None and any((h.get('line_num') or 0) > ex_line for h in ex.get('horses', [])):
                     continue
-                ex_type = normalize_bet_type(ex.get('bet_type', ''), ex.get('description', ''))
+                ex_type = normalize_bet_type(ex.get('bet_type', ''), ex.get('description', ''), selection_names(ex))
                 ex_names = set(h.get('name') for h in ex.get('horses', []) if h.get('name'))
                 if ex_type == b_type and chosen_names == ex_names:
                     already_covered = True
@@ -1637,7 +1652,9 @@ def reconcile_bet_scoping_qualifiers(
                     has_ew = bool(re.search(r'\b(?:ew|e/w|e\.w|each\s*way)\b', l_lower))
                     if has_ew != b_ew:
                         continue
-                    if b_type_keyword and (b_type_keyword in l_lower or 'doub' in l_lower or 'treb' in l_lower or 'acc' in l_lower):
+                    # its own type's words only: a treble isn't paired with a line saying 'doub' (review R14)
+                    own_words = BET_TYPE_WORDS.get(normalize_bet_type(b_type_keyword), ())
+                    if b_type_keyword and (b_type_keyword in l_lower or any(w in l_lower for w in own_words)):
                         used_lines.add(l_num)
                         matched_line_num = l_num
                         lt_q_type, lt_q_n = parse_scoping_qualifier(l_text)
@@ -1665,8 +1682,10 @@ def reconcile_bet_scoping_qualifiers(
         # - Full cover / fixed count bets: If bet type requires N runners (e.g. Lucky 31=5, Canadian=5, Yankee=4, etc.)
         #   and bet already has N runners, do NOT strip below N.
         # - Only applies when multiple separate bets exist on the slip (e.g. interleaved bet entries).
-        if len(bets_list) > 1 and effective_line is not None and len(preceding_selections) > 0 and len(preceding_selections) < len(selections):
-            norm_b = normalize_bet_type(str(bet.get('bet_type', '')), desc)
+        line_nums_read = not any(s.get('_line_guessed') for s in selections)
+        if (len(bets_list) > 1 and effective_line is not None and line_nums_read and len(preceding_selections) > 0
+                and len(preceding_selections) < len(selections)):
+            norm_b = normalize_bet_type(str(bet.get('bet_type', '')), desc, selection_names(bet))
             req_selections_map = {
                 'single': 1, 'double': 2, 'treble': 3,
                 'trixie': 3, 'patent': 3,
@@ -1707,7 +1726,7 @@ def reconcile_bet_scoping_qualifiers(
         # A qualifier must agree with the bet it is attached to. Customers' margin notes ('LAST 2', 'ABV 4') often
         # sit half a line off; a note that contradicts the bet belongs to a neighbouring line.
         if q_type and q_n > 0:
-            norm_q = normalize_bet_type(str(bet.get('bet_type', '')), combined_text)
+            norm_q = normalize_bet_type(str(bet.get('bet_type', '')), combined_text, selection_names(bet))
             has_multiplier = bool(re.search(r'\b\d+\s*x\b|\b(?:x|cross)\s*doub', combined_text, re.I))
             single_line_size = {'double': 2, 'treble': 3}.get(norm_q) if not has_multiplier else None
             if single_line_size and q_n > single_line_size and len(bet.get('horses', [])) == single_line_size:
@@ -1777,7 +1796,7 @@ def reconcile_bet_scoping_qualifiers(
                     bet['bet_type'] = 'doubles'
                     bet['cost_pence'] = calculate_bet_cost_pence(bet)
 
-            b_type_norm = normalize_bet_type(bet.get('bet_type', ''), bet.get('description', ''))
+            b_type_norm = normalize_bet_type(bet.get('bet_type', ''), bet.get('description', ''), selection_names(bet))
             if b_type_norm == 'accumulator' and len(bet.get('horses', [])) < 4:
                 if len(preceding_selections) >= 4:
                     orig_names = [h.get('name') for h in bet.get('horses', [])]
@@ -1791,7 +1810,7 @@ def reconcile_bet_scoping_qualifiers(
 
         # A single double / treble left short of runners (e.g. it named a selection that does not exist)
         # covers the selections written directly above it.
-        norm_fill = normalize_bet_type(str(bet.get('bet_type', '')), combined_text)
+        norm_fill = normalize_bet_type(str(bet.get('bet_type', '')), combined_text, selection_names(bet))
         fill_n = {'double': 2, 'treble': 3}.get(norm_fill)
         if (fill_n and len(bet.get('horses', [])) < fill_n and len(preceding_selections) >= fill_n
                 and not re.search(r'\b\d+\s*x\b', combined_text)):
@@ -1806,7 +1825,7 @@ def reconcile_bet_scoping_qualifiers(
         mult_num = int(m_mult_raw.group(1)) if m_mult_raw else None
 
         # Forecasts / tricasts (incl. forecast doubles) have fixed line counts: never re-fold them.
-        norm_now = normalize_bet_type(str(bet.get('bet_type', '')), combined_text)
+        norm_now = normalize_bet_type(str(bet.get('bet_type', '')), combined_text, selection_names(bet))
         is_fc_or_tri = 'forecast' in norm_now or 'tricast' in norm_now
         # The bet type the customer actually WROTE always outranks a fold guessed from the multiplier.
         # e.g. '4x 50 WIN x DOUBLES' on 2+2 same-race runners is 4 cross doubles, NOT 4C3 = 4 trebles.
@@ -1897,10 +1916,11 @@ def reconcile_bet_scoping_qualifiers(
     for b in bets_list:
         desc = b.get('description', '').lower()
         if 'dreb' in desc or 'grebl' in desc:
-            has_valid_treb = any(
+            has_valid_treb = any(  # the same bet read twice: same stake, terms and runners (review R16)
                 'treb' in other.get('description', '').lower()
                 and other.get('stake_pence') == b.get('stake_pence')
                 and other.get('each_way') == b.get('each_way')
+                and sorted(selection_names(other)) == sorted(selection_names(b))
                 for other in bets_list if other is not b
             )
             if has_valid_treb:
@@ -1917,11 +1937,11 @@ def reconcile_bet_scoping_qualifiers(
         if i in skip_indices:
             continue
         b_curr = bets_list[i]
-        b_curr_type = normalize_bet_type(b_curr.get('bet_type', ''), b_curr.get('description', ''))
+        b_curr_type = normalize_bet_type(b_curr.get('bet_type', ''), b_curr.get('description', ''), selection_names(b_curr))
 
         if b_curr_type == 'double' and i < len(bets_list) - 1:
             b_next = bets_list[i + 1]
-            b_next_type = normalize_bet_type(b_next.get('bet_type', ''), b_next.get('description', ''))
+            b_next_type = normalize_bet_type(b_next.get('bet_type', ''), b_next.get('description', ''), selection_names(b_next))
 
             if b_next_type == 'double':
                 curr_names = sorted(h.get('name') for h in b_curr.get('horses', []))
@@ -1930,7 +1950,8 @@ def reconcile_bet_scoping_qualifiers(
                     # Only merge when IDENTICAL horse sets — the VLM split one bet across two lines (e.g. left-column '3 x').
                     # Do NOT merge when next_bet has more horses than curr_bet: that means they are two separate bets.
                     has_win = 'win' in b_curr.get('description', '').lower() or 'win' in b_next.get('description', '').lower()
-                    has_3x = '3' in b_curr.get('description', '') or '3' in b_next.get('description', '')
+                    # a written '3 x', not any '3' ('£3 win double'; review R16)
+                    has_3x = bool(re.search(r'\b3\s*x\b', f"{b_curr.get('description', '')} {b_next.get('description', '')}", re.I))
                     if has_3x:
                         unit_sp = b_curr.get('stake_pence') or b_next.get('stake_pence') or 50
                         stake_lbl = f"{unit_sp}p" if unit_sp < 100 else f"£{unit_sp / 100:.2f}".rstrip('0').rstrip('.')
@@ -1962,126 +1983,85 @@ def _single_stake_pence(bet: dict) -> int | None:
     return sp
 
 
+BET_TYPE_WORDS = {'double': ('doub', 'dbl'), 'treble': ('treb', 'tbl'), 'accumulator': ('acc', 'fold')}
+
+
+def _merge_singles(group: list[dict], how: str) -> list[dict]:
+    """
+    One F8 'Singles' bet for singles sharing a unit stake and each-way terms: Betty places one single per selection.
+    A selection already in the merged bet stays a single of its own: two singles on one horse are two bets, not one
+    (review R15); if the reader listed it twice by mistake, the money check sends the slip to staff.
+    """
+    if len(group) == 1:
+        return list(group)
+    base_bet = dict(group[0])
+    all_horses, seen_keys, repeats = [], set(), []
+    for b in group:
+        for h in b.get('horses', []):
+            h_name = str(h.get('name', '')).strip().lower()
+            h_time = str(h.get('time', '')).strip().lower()
+            h_key = (h_name, h_time) if h_name else id(h)
+            if h_key in seen_keys:
+                repeats.append({**b, 'horses': [h], 'description': f"Single on {h.get('name', '')}"})
+            else:
+                seen_keys.add(h_key)
+                all_horses.append(h)
+    base_bet['horses'] = all_horses
+    n_count = len(all_horses)
+    sp = _single_stake_pence(base_bet)  # never None: singles without a stake are not grouped
+    is_ew = bool(base_bet.get('each_way', False))
+    ew_str = " (Each-Way)" if is_ew else ""
+    stake_str = f"£{sp / 100:.2f}" if sp >= 100 else f"{sp}p"
+    base_bet['description'] = f"{n_count} x {stake_str}{ew_str} Singles"
+    base_bet['bet_type'] = 'single'
+    base_bet['stake_pence'] = sp
+    base_bet['unit_stake'] = float(sp / 100.0)
+    base_bet['each_way'] = is_ew
+    kept = f"; {len(repeats)} repeated selection(s) kept as separate single(s)" if repeats else ""
+    print(f"[+] Multi-Single Consolidation: {how} {len(group)} {stake_str}{ew_str} singles into 1 bet with {n_count} "
+          f"runner(s) for F8 multi-selection entry{kept}.")
+    return [base_bet] + repeats
+
+
 def consolidate_identical_stake_singles(bets_list: list[dict]) -> list[dict]:
     """
     Consolidates multiple single bets that share identical unit stakes and each-way terms.
     In Betty, entering N selections into the slip and choosing 'Singles' (shortcut 's') on
     the F8 bet selection screen with unit stake X automatically places N single bets of stake X.
-    This combines multiple single entries into a single F8 entry pass.
+    This combines multiple single entries into a single F8 entry pass: every single on an all-singles slip, else
+    consecutive singles between the other bets.
     """
     if not bets_list or len(bets_list) < 2:
         return bets_list
 
-    # Check if all bets on the slip are singles
-    all_singles = all(
-        normalize_bet_type(str(b.get('bet_type', '')), str(b.get('description', ''))) == 'single'
-        for b in bets_list
-    )
+    def is_single(b: dict) -> bool:
+        return normalize_bet_type(str(b.get('bet_type', '')), str(b.get('description', '')), selection_names(b)) == 'single'
 
-    if all_singles:
+    if all(is_single(b) for b in bets_list):
         grouped: dict[tuple, list[dict]] = {}
-        order: list[tuple] = []
         for b in bets_list:
             sp = _single_stake_pence(b)
-            ew = bool(b.get('each_way', False))
-            key = (sp, ew) if sp is not None else (None, id(b))  # no stake read: never merged (staff see it alone)
-            if key not in grouped:
-                grouped[key] = []
-                order.append(key)
-            grouped[key].append(b)
+            key = (sp, bool(b.get('each_way', False))) if sp is not None else (None, id(b))  # no stake: never merged
+            grouped.setdefault(key, []).append(b)
+        return [m for group in grouped.values() for m in _merge_singles(group, "Grouped")]
 
-        result: list[dict] = []
-        for key in order:
-            group = grouped[key]
-            if len(group) == 1:
-                result.append(group[0])
-            else:
-                base_bet = dict(group[0])
-                all_horses = []
-                seen_keys = set()
-                for b in group:
-                    for h in b.get('horses', []):
-                        h_name = str(h.get('name', '')).strip().lower()
-                        h_time = str(h.get('time', '')).strip().lower()
-                        h_key = (h_name, h_time) if h_name else id(h)
-                        if h_key not in seen_keys:
-                            seen_keys.add(h_key)
-                            all_horses.append(h)
-                base_bet['horses'] = all_horses
-                n_count = len(all_horses)
-                stake_pence = key[0]
-                is_ew = key[1]
-                ew_str = " (Each-Way)" if is_ew else ""
-                stake_str = f"£{stake_pence / 100:.2f}" if stake_pence >= 100 else f"{stake_pence}p"
-                base_bet['description'] = f"{n_count} x {stake_str}{ew_str} Singles"
-                base_bet['bet_type'] = 'single'
-                base_bet['stake_pence'] = stake_pence
-                base_bet['unit_stake'] = float(stake_pence / 100.0)
-                base_bet['each_way'] = is_ew
-                print(f"[+] Multi-Single Consolidation: Grouped {len(group)} separate {stake_str}{ew_str} singles into 1 bet with {n_count} runner(s) for F8 multi-selection entry.")
-                result.append(base_bet)
-        return result
-
-    # For mixed slips (e.g. doubles + singles), group consecutive singles sharing identical stake and EW
     merged: list[dict] = []
     current_group: list[dict] = []
-
-    def _flush_consecutive(group: list[dict]):
-        if not group:
-            return
-        if len(group) == 1:
-            merged.append(group[0])
-            return
-        base_bet = dict(group[0])
-        all_horses = []
-        seen_keys = set()
-        for b in group:
-            for h in b.get('horses', []):
-                h_name = str(h.get('name', '')).strip().lower()
-                h_time = str(h.get('time', '')).strip().lower()
-                h_key = (h_name, h_time) if h_name else id(h)
-                if h_key not in seen_keys:
-                    seen_keys.add(h_key)
-                    all_horses.append(h)
-        base_bet['horses'] = all_horses
-        n_count = len(all_horses)
-        sp = _single_stake_pence(base_bet)  # never None: singles without a stake are not grouped
-        is_ew = bool(base_bet.get('each_way', False))
-        ew_str = " (Each-Way)" if is_ew else ""
-        stake_str = f"£{sp / 100:.2f}" if sp >= 100 else f"{sp}p"
-        base_bet['description'] = f"{n_count} x {stake_str}{ew_str} Singles"
-        base_bet['bet_type'] = 'single'
-        base_bet['stake_pence'] = sp
-        base_bet['unit_stake'] = float(sp / 100.0)
-        base_bet['each_way'] = is_ew
-        print(f"[+] Multi-Single Consolidation: Merged {len(group)} consecutive {stake_str}{ew_str} singles into 1 bet with {n_count} runner(s) for F8 multi-selection entry.")
-        merged.append(base_bet)
-
     for bet in bets_list:
-        b_type = normalize_bet_type(str(bet.get('bet_type', '')), str(bet.get('description', '')))
-        if b_type == 'single':
-            if not current_group:
-                current_group.append(bet)
-            else:
-                prev = current_group[-1]
-                sp_curr = _single_stake_pence(bet)
-                sp_prev = _single_stake_pence(prev)
-                ew_curr = bool(bet.get('each_way', False))
-                ew_prev = bool(prev.get('each_way', False))
-                if sp_curr is not None and sp_curr == sp_prev and ew_curr == ew_prev:
-                    current_group.append(bet)
-                else:
-                    _flush_consecutive(current_group)
-                    current_group = [bet]
-        else:
-            if current_group:
-                _flush_consecutive(current_group)
-                current_group = []
+        if not is_single(bet):
+            merged.extend(_merge_singles(current_group, "Merged") if current_group else [])
+            current_group = []
             merged.append(bet)
-
-    if current_group:
-        _flush_consecutive(current_group)
-
+            continue
+        if current_group:
+            prev = current_group[-1]
+            sp_curr = _single_stake_pence(bet)
+            if not (sp_curr is not None and sp_curr == _single_stake_pence(prev)
+                    and bool(bet.get('each_way', False)) == bool(prev.get('each_way', False))):
+                merged.extend(_merge_singles(current_group, "Merged"))
+                current_group = []
+        current_group.append(bet)
+    merged.extend(_merge_singles(current_group, "Merged") if current_group else [])
     return merged
 
 
@@ -2549,6 +2529,7 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
                     break
             if s.get('line_num') is None:
                 s['line_num'] = (s_idx + 1) * 2
+                s['_line_guessed'] = True  # not read: the causality guard ignores the order (review R17)
 
     bets_list = bets_data.get('bets', [])
     # Backfill missing line numbers on bets if omitted by VLM
@@ -2665,6 +2646,7 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
     # Flipping a WIN bet to EW is always wrong even if it makes totals match numerically.
     elif target_pence is not None and calc_total_pence != target_pence:
         lines_text_map = {lt.get('line_num'): str(lt.get('raw_text', '')).lower() for lt in line_transcription}
+        flips = []  # bets whose each-way flip alone makes the total match
         for h_idx, bet in enumerate(bets_list):
             b_line = bet.get('line_num')
             b_line_text = lines_text_map.get(b_line, '')
@@ -2682,17 +2664,22 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
             if line_is_explicit_win or desc_is_explicit_win or (orig_ew and line_is_explicit_ew):
                 continue  # Never flip a bet whose written line explicitly says WIN or EW
             bet['each_way'] = not orig_ew
-            healed_cost = calculate_bet_cost_pence(bet)
-            bet['cost_pence'] = healed_cost
-            healed_total = sum(int(b.get('cost_pence') or 0) for b in bets_list)
-            if healed_total == target_pence:
-                calc_total_pence = healed_total
-                ew_str = "Each-Way" if bet['each_way'] else "Win Only"
-                print(f"[+] Total Stake Reconciliation Healer: Auto-corrected Bet #{h_idx + 1} to {ew_str}! Calculated total now {calc_total_pence}p (£{calc_total_pence/100:.2f}), matching {target_label} total {target_pence}p (£{target_pence/100:.2f}) exactly.")
-                break
-            else:
-                bet['each_way'] = orig_ew
-                bet['cost_pence'] = calculate_bet_cost_pence(bet)
+            if calc_total_pence - int(bet.get('cost_pence') or 0) + calculate_bet_cost_pence(bet) == target_pence:
+                flips.append(h_idx)
+            bet['each_way'] = orig_ew
+            bet['cost_pence'] = calculate_bet_cost_pence(bet)
+        # Only an unambiguous flip: with two bets of the same cost, either flip fits the money, and the wrong one would
+        # be placed each way with nothing left to catch it (review R1). Then the money check sends it to staff.
+        if len(flips) == 1:
+            bet = bets_list[flips[0]]
+            bet['each_way'] = not bet.get('each_way', False)
+            bet['cost_pence'] = calculate_bet_cost_pence(bet)
+            calc_total_pence = sum(int(b.get('cost_pence') or 0) for b in bets_list)
+            ew_str = "Each-Way" if bet['each_way'] else "Win Only"
+            print(f"[+] Total Stake Reconciliation Healer: Auto-corrected Bet #{flips[0] + 1} to {ew_str}! Calculated total now {calc_total_pence}p (£{calc_total_pence/100:.2f}), matching {target_label} total {target_pence}p (£{target_pence/100:.2f}) exactly.")
+        elif flips:
+            print(f"[-] Total Stake Reconciliation Healer: bets {', '.join(f'#{i + 1}' for i in flips)} could each be the "
+                  f"misread each way; none changed.")
 
 
     if written_total_pence is not None:
@@ -2883,7 +2870,7 @@ def race_list_for_selection(horse: dict, runners: list[dict]) -> list[dict]:
     written time, narrowed to the written meeting letter when it fits a meeting racing then. UK/IRE races first
     (international / virtual only when no UK/IRE race is at that time). Ordered by race, then saddle cloth.
     """
-    times = {m for m, _ in (parse_race_time_to_minutes(str(horse.get(k) or '')) for k in ('raw_time', 'time')) if m is not None}
+    times = written_race_times(horse)
     if not times:
         return []
     hinted = _hinted_meeting(horse)
@@ -3271,6 +3258,8 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
             elif last_valid_meeting and not s_raw_hint:
                 s_raw_hint = last_valid_meeting
 
+            if not s_name and s_num is not None:
+                s_name = str(s_num)  # a number with no name is a number bet ('5'), never dropped (review R13)
             if not s_name and s_num is None:
                 # Nothing readable for this selection: kept for the staff pop-up, never dropped (user, 26 Oct)
                 _, norm_time = parse_race_time_to_minutes(s_time)
@@ -3314,6 +3303,8 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
                 h_time = str(horse.get('raw_time') or horse.get('written_time') or horse.get('time', '')).strip()
             h_price = str(horse.get('price', '')).strip()
             own_key = key_by_num.get(horse.get('selection_num'))  # the written selection's key, ditto applied
+            if not h_name and horse.get('number') is not None:
+                h_name = horse['name'] = str(horse['number'])  # a number bet, as above (review R13)
             if not h_name and horse.get('number') is None:
                 _, norm_time = parse_race_time_to_minutes(h_time)
                 h_key = own_key or (norm_time or h_time.strip(), '')
@@ -3977,17 +3968,25 @@ def on_staff_input(kind: str):
     """
     A person used the till ("key", "click" or "move", never this program's own input). Every kind counts as activity
     for the auto-resume; a key or click also pauses the watcher, unless staff input is expected (a prompt is open).
+    Called inside the input hooks, so it only sets flags: the message goes out on another thread. Windows silently
+    removes a hook that is slow to return, and the watcher would then type while staff use the till (review R7).
     """
     global _watcher_stop_reason, _paused_for_staff, _last_staff_activity
     _last_staff_activity = time.time()
+    if kind == "move":  # every mouse movement comes here: no lock for it
+        return
     with _watcher_state_lock:
-        if kind == "move" or not watcher_on.is_set() or _staff_input_expected > 0:
+        if not watcher_on.is_set() or _staff_input_expected > 0:
             return
         watcher_on.clear()
         _paused_for_staff = True
         if watcher_busy:
             _watcher_stop_reason = "staff"  # stop at once and touch nothing: staff have the terminal
             abort_event.set()
+    threading.Thread(target=_announce_staff_pause, args=(kind,), daemon=True).start()
+
+
+def _announce_staff_pause(kind: str):
     print(f"[*] Staff used the till ({kind}): watcher paused. It resumes after {STAFF_IDLE_RESUME_SECS}s with no activity, or press `.")
     refresh_watcher_hud(f"Staff using the till: paused. Resumes after {STAFF_IDLE_RESUME_SECS}s with no activity (or press `).")
 
@@ -4050,8 +4049,11 @@ class HumanInputMonitor:
         return self.user32.CallNextHookEx(None, code, wparam, lparam)
 
     def _run(self):
-        self.user32.SetWindowsHookExW(self.WH_KEYBOARD_LL, self._kbd_proc, None, 0)
-        self.user32.SetWindowsHookExW(self.WH_MOUSE_LL, self._mouse_proc, None, 0)
+        hooks = (self.user32.SetWindowsHookExW(self.WH_KEYBOARD_LL, self._kbd_proc, None, 0),
+                 self.user32.SetWindowsHookExW(self.WH_MOUSE_LL, self._mouse_proc, None, 0))
+        if not all(hooks):  # without them staff key presses and clicks aren't seen (review R7)
+            notify("Staff detector didn't start: the watcher can't tell when staff use the till. Don't use the till "
+                   "while the watcher is on, and restart Betty Companion.", is_error=True, sound=True)
         msg = self._wt.MSG()
         while self.user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             self.user32.TranslateMessage(ctypes.byref(msg))
@@ -4113,7 +4115,7 @@ def read_wager_details(img: Any) -> dict:
     number = normalise_wager_number(_ocr_box(img, VW_WAGER_NUMBER_BOX, _DIGITS_CFG, invert=True))
     stamps = re.findall(r'(\d{1,2}):(\d{2}):(\d{2})', _ocr_box(img, VW_TIMESTAMPS_BOX, '--psm 6'))
     struck = f"{int(stamps[0][0]):02d}:{stamps[0][1]}" if stamps else None
-    summary = _ocr_box(img, VW_SLIP_SUMMARY_BOX, '--psm 6', scale=2)
+    summary = without_thousands_commas(_ocr_box(img, VW_SLIP_SUMMARY_BOX, '--psm 6', scale=2))
     pay = re.search(r'Payment:\s*\D{0,2}\s*(\d+)\.(\d{2})', summary)
     return {'number': number, 'struck_time': struck,
             'struck_clock': ":".join(stamps[0]) if stamps else None,
@@ -4312,6 +4314,8 @@ def load_wager(row: int, number: str) -> dict:
     current_q = read_unedited_queue(pyautogui.screenshot())
     if number in current_q:
         row = current_q.index(number)
+    elif current_q:  # the list was read and the wager has left it (staff took it): its old row is another wager
+        raise NavError(f"wager {number} is no longer in the unedited list")
     x, y, w, h = VW_QUEUE_FIRST_BOX
     print(f"[*] Clicking wager {number} (row {row + 1} of the unedited list); waiting for it to load...")
     betty_click(x + w // 2, y + h // 2 + row * VW_QUEUE_PITCH)
@@ -4544,7 +4548,8 @@ def clock_12h(hhmm: str) -> str:
 def entry_bet_type(bet: dict) -> str | None:
     """The canonical bet type to enter, or None when the program can't enter it (staff)."""
     n = len(bet.get('horses', []))
-    t = normalize_bet_type(str(bet.get('bet_type', 'single')).strip().lower(), str(bet.get('description', '')))
+    t = normalize_bet_type(str(bet.get('bet_type', 'single')).strip().lower(), str(bet.get('description', '')),
+                           selection_names(bet))
     m = re.match(r'perm (\d+)-folds', t)
     if m and int(m.group(1)) == n:
         t = 'accumulator'
@@ -4609,7 +4614,7 @@ def read_betslip_selections(img: Any) -> list[dict]:
 def read_betslip_bets(img: Any) -> dict:
     """The grey panel: {'bets': [{'n', 'name', 'count', 'each_way', 'stake_pence'}], 'payment_pence', 'text'}."""
     text = _ocr_bw(img, _betslip_box(img, BETSLIP_BETS_ROWS))
-    flat = " ".join(text.split())
+    flat = without_thousands_commas(" ".join(text.split()))
     bets = []
     chunks = re.split(r'(?=\b\d+\))', flat)
     for c in chunks:
@@ -4909,12 +4914,20 @@ def folder_title(img: Any) -> str:
     return _letters(_ocr_box(img, FOLDER_TITLE_BOX, '--psm 6', invert=True))
 
 
+# Betty names its folders in English whatever language Windows is in ('%A' would follow Windows; review R28)
+ENGLISH_DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def betty_day_name() -> str:
+    return ENGLISH_DAYS[time.localtime().tm_wday]
+
+
 def open_race_folder(feed: str | None):
     """Opens today's folder holding a feed's races ("Friday's SIS Horse Racing" for HGB00), from the buttons along
     the bottom (paged with Next), and confirms it by the folder title."""
     if feed not in FEED_FOLDERS:
         raise WagerForStaff(f"Betty's folder for this race isn't known (feed {feed or 'unknown'})")
-    want = _letters(f"{time.strftime('%A')}'s {FEED_FOLDERS[feed]}")
+    want = _letters(f"{betty_day_name()}'s {FEED_FOLDERS[feed]}")
     for _ in range(FOLDER_PAGES):
         _check_stop()
         img = pyautogui.screenshot()
@@ -4931,7 +4944,7 @@ def open_race_folder(feed: str | None):
                 raise WagerForStaff(f"Betty's '{FEED_FOLDERS[feed]}' folder didn't open")
         betty_click(*FOLDER_NEXT)  # the next page of folder buttons
         time.sleep(0.2)
-    raise WagerForStaff(f"Betty's folder '{time.strftime('%A')}'s {FEED_FOLDERS[feed]}' wasn't found")
+    raise WagerForStaff(f"Betty's folder '{betty_day_name()}'s {FEED_FOLDERS[feed]}' wasn't found")
 
 
 def pick_in_folder_list(first_row: tuple, n_rows: int, up: tuple, down: tuple, wanted: str, what: str):
@@ -5182,10 +5195,27 @@ def betslip_runner_by_name(name: str, horse: dict) -> dict | None:
     return scored[0][1]
 
 
+def _meeting_label_fits(label: str | None, horse: dict) -> bool:
+    """
+    Whether a betslip line's meeting label is the selection's meeting: Betty's 4 letters exactly, or one letter off
+    (an OCR slip) when no other meeting racing then is as near. Newcastle, Newmarket and Newton Abbot are all 'new',
+    and a dog line shows only 'Trap N', so 3 letters let a dog bet at the wrong track pass (review R3).
+    """
+    got = re.sub(r'[^a-z]', '', str(label or '').lower())[:4]
+    meeting = horse.get('meeting', '')
+    want = betty_meeting_abbrev(meeting)
+    if got == want:
+        return True
+    if not got or _letters_off(got, want) > 1:
+        return False
+    racing = set(_meetings_at(str(horse.get('time', '')))) | {meeting}
+    return nearest_meeting_label(got, sorted(racing), prefer=meeting) == meeting
+
+
 def _betslip_race_problems(got: dict, horse: dict) -> list[str]:
     """Whether a betslip line is in the selection's race: meeting (Betty's 4 letters) and time (12- or 24-hour)."""
     problems = []
-    if str(got.get('meeting') or '').lower()[:3] != betty_meeting_abbrev(horse.get('meeting', '')).lower()[:3]:
+    if not _meeting_label_fits(got.get('meeting'), horse):
         problems.append(f"meeting {got['meeting']}")
     # Accept either 12-hour or 24-hour time (e.g. 3:34 or 15:34 for virtuals)
     h_time = str(horse.get('time', ''))
@@ -5471,7 +5501,9 @@ def choose_bet_type(canon: str, extending: bool = False):
     # Singles is selected by default on Betty when F8 opens: if already selected, nothing to do
     if canon == 'single':
         initial_rows = _f8_rows(pyautogui.screenshot())
-        if initial_rows and initial_rows[0][1] and bet_label_score(initial_rows[0][0], canon) > 0:
+        # unless another row is selected too and only Singles is wanted (review R18)
+        if (initial_rows and initial_rows[0][1] and bet_label_score(initial_rows[0][0], canon) > 0
+                and (extending or not any(sel for _, sel in initial_rows[1:]))):
             return
 
     if key:
@@ -5510,6 +5542,9 @@ def choose_bet_type(canon: str, extending: bool = False):
         raise WagerForStaff(f"could not select {canon} in Betty's bet list for extended bet")
 
 
+STAKE_BOX_DIGITS = 8  # backspaces clearing the last stake (pence): up to £99,999.99 (5 cleared only £999.99; review R18)
+
+
 def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None = None):
     """On Choose Bet and Stake: stake, each way / win, bet type. `bet_no` = the bet's place in the wager, for the log."""
     stake = round(float(bet.get('stake_pence') or 0))
@@ -5517,22 +5552,17 @@ def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None 
         raise WagerForStaff("a bet has no stake")
     if bets_before > 0:
         time.sleep(0.15)
-        for _ in range(5):
+        for _ in range(STAKE_BOX_DIGITS):
             betty_press('backspace')
             time.sleep(0.01)
     _type_text(str(stake))
     betty_press('enter')
+    time.sleep(0.1)  # the each-way button is drawn after Enter (review R18)
     arr = np.array(pyautogui.screenshot().convert('RGB'))
     ew_on = _colour_share(arr, F8_EACH_WAY_BOX, F8_ROW_GREEN) >= 0.4
     if bool(bet.get('each_way')) != ew_on:
         betty_press('e' if bet.get('each_way') else 'w')
-    if bets_before > 0:
-        try:
-            choose_bet_type(canon, extending=True)
-        except TypeError:
-            choose_bet_type(canon)
-    else:
-        choose_bet_type(canon)
+    choose_bet_type(canon, extending=bets_before > 0)
     time.sleep(0.15)
     ew_str = 'Each Way' if bet.get('each_way') else 'Win Only'
     print(f"[+] Bet {bet_no or bets_before + 1} entered: {canon}, {ew_str} @ {stake}p.")
@@ -5756,8 +5786,9 @@ def commit_wager(number: str, payment_pence: int) -> str:
 
 def wait_for_staff_review(number: str) -> str:
     """
-    Test mode: the wager is entered and checked; staff place it (F12) or cancel it. Returns 'placed' when Betty is back
-    on View Wagers without it in the unedited list, else 'cancelled' (Betty is then taken back to Home).
+    Test mode: the wager is entered and checked; staff place it (F12) or cancel it. Returns 'placed' when it has left
+    the unedited list (looked at on View Wagers, opened from Home if staff end there), else 'cancelled' (Betty is then
+    taken back to Home).
     """
     alert_staff(f"Wager {number} entered and checked (test mode). Place it with F12, or cancel it.")
     refresh_watcher_hud(f"TEST MODE: wager {number} entered and checked. Place it (F12) or cancel it.")
@@ -5768,6 +5799,11 @@ def wait_for_staff_review(number: str) -> str:
             if screen in (SCREEN_VIEW_WAGERS, SCREEN_HOME):
                 break
             time.sleep(0.5)
+    if screen == SCREEN_HOME:  # F12 can land on Home too: look at the list before calling it cancelled (review R9)
+        try:
+            screen = open_view_wagers()
+        except NavError as e:
+            print(f"[-] Wager {number}: couldn't open View Wagers to see whether staff placed it ({e}).")
     if screen == SCREEN_VIEW_WAGERS and number not in read_unedited_queue(pyautogui.screenshot()):
         return 'placed'
     go_home()
@@ -6169,6 +6205,16 @@ def watcher_loop():
             if failures >= WATCHER_UNKNOWN_LIMIT or not _go_home_from_handler():
                 watcher_on.clear()
                 notify(f"Watcher stopped: {e}. Please check Betty.", is_error=True)
+            elif _current_wager:  # its second navigation failure: FAO in live mode, with a sound (review R8)
+                number, _current_wager = _current_wager, None
+                try:
+                    leave_wager_for_staff(number, f"Betty's screens went wrong twice while entering it ({e})")
+                except WatcherStop:
+                    print(f"[*] Wager {number} left for staff (watcher switched off).")
+                except Exception as fao_error:
+                    print(f"[-] Wager {number}: could not finish leaving it for staff: {fao_error}")
+                    _go_home_from_handler()
+                    alert_staff(f"Wager {number} needs staff: {e}. Could NOT mark it FAO - please check Betty.")
         except Exception as e:
             print(f"[-] Watcher error{f' (wager {_current_wager})' if _current_wager else ''}: {e}")
             watcher_on.clear()
@@ -6181,6 +6227,9 @@ def watcher_loop():
             elif _current_wager and _wager_opened:
                 _wagers_left_for_staff.add(_current_wager)  # stopped (Esc) or failed part-way: leave it for staff
                 print(f"[!] Wager {_current_wager} left unedited for staff after the problem above (not marked FAO).")
+                journal_staff("staff", wager=_current_wager, reason="stopped part-way: left unedited, not marked FAO",
+                              screenshot=None, test_mode=test_mode_on.is_set())
+                alert_staff(f"Wager {_current_wager} was left unedited part-way: please check it in Betty.")
             elif _current_wager:  # stopped before its bet edit was opened: nothing done to it, look again next time
                 print(f"[*] Wager {_current_wager}: stopped before it was opened; it stays in the queue.")
             _current_wager = None
