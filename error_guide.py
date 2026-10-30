@@ -96,6 +96,11 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Runner not found in Betty's list",
      "The race was found, but the runner couldn't be picked from Betty's runner list.",
      CHECK_BY_HAND),
+    (r"meeting at the top of Betty's .* runner list could not be read",
+     "Runner list couldn't be read",
+     "Betty's runner list for that time came up, but the meeting at its top couldn't be read, so the program didn't "
+     "press on to another meeting blind.",
+     CHECK_BY_HAND),
     (r"can't read whether Betty's .* list is the horses or",
      "Horses and dogs at the same name and time",
      "Horses and greyhounds share the meeting name at that time, and the screen didn't show which list was open.",
@@ -122,7 +127,8 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Betty left the bet screen",
      "All the selections were in and Choose Bet and Stake (F8) opened, then Betty went to another screen by itself "
      "before the bet type was chosen.",
-     "Enter the wager by hand, and note what Betty showed if it happens again."),
+     "Enter the wager by hand. The log line before it lists the keys sent on that screen; the first marked "
+     "'(screen gone)' is where Betty left."),
     (r"bet list|for extended bet",
      "Bet type couldn't be chosen",
      "On Choose Bet and Stake, the bet type couldn't be found or selected in Betty's bet list.",

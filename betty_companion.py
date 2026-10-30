@@ -1,4 +1,4 @@
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -1036,8 +1036,8 @@ def number_bet_is_dog(horse: dict, runners: list[dict]) -> bool:
     """
     A number bet as the shop reads it (user, 27 Oct): T / Tr / Trap written is always a dog. 'No.' or a bare number
     is a horse, unless the meeting written races only dogs today: 'No 3 7.30 Romford' names a dog race by its meeting
-    and time, so the house rules make it trap 3 there. At a meeting racing both (Doncaster), 'No.' / a bare number is
-    the horse.
+    and time, so the house rules make it trap 3 there. At a meeting racing both (Doncaster, Newcastle), 'No.' / a bare
+    number is the horse, unless the slip says dogs or only the dogs race there at the time written.
     """
     if TRAP_WRITTEN.match(str(horse.get('name') or '').strip()):
         return True
@@ -1047,10 +1047,28 @@ def number_bet_is_dog(horse: dict, runners: list[dict]) -> bool:
     # Each meeting once, not each of the card's 13,000 runners (9.2455858: 'Sund' matched no horse runner, so
     # every one was compared)
     meetings = {(r.get('category') == 'greyhound', r['meeting']) for r in runners}
-    if any(not dog and _meeting_matches(m, hinted) for dog, m in meetings):
+    horses_there = any(not dog and _meeting_matches(m, hinted) for dog, m in meetings)
+    dogs_there = any(dog and _meeting_matches(m, hinted) for dog, m in meetings)
+    if horses_there and dogs_there:
+        # 9.2458296 (30 Oct): '6 £2w 4.28 NCLE' under 'DOG'S' was taken for a Newcastle horse; with no horse race at
+        # Newcastle then, Rule 1.8.4 split it over four races abroad instead of the Newcastle dogs at 16:28
+        return bool(horse.get('_slip_says_dogs')) or _only_dogs_race_then(horse, hinted, runners)
+    if horses_there:
         return False
-    return (any(dog and _meeting_matches(m, hinted) for dog, m in meetings)
-            or bool(is_greyhound_or_trap_selection(dict(horse))[2]))
+    return dogs_there or bool(is_greyhound_or_trap_selection(dict(horse))[2])
+
+
+def _only_dogs_race_then(horse: dict, hinted: str, runners: list[dict]) -> bool:
+    """At a meeting racing horses and dogs: a dog race there is at the written time and no horse race is near it."""
+    times = written_race_times(horse)
+    if not times:
+        return False
+
+    def near(r: dict, window: int) -> bool:
+        return (r.get('minutes') is not None and any(abs(r['minutes'] - m) <= window for m in times)
+                and _meeting_matches(r['meeting'], hinted))
+    dogs = any(r.get('category') == 'greyhound' and near(r, DOG_TIME_AGREE_MINS) for r in runners)
+    return dogs and not any(r.get('category') != 'greyhound' and near(r, TIME_AGREE_MINS) for r in runners)
 
 
 def trap_by_dog_rules(horse: dict, dogs: list[dict], struck_mins: float | None, single: bool) -> tuple[list[dict], str]:
@@ -2364,8 +2382,14 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
         if lt.get('struck') and not re.search(r'cross(?:ed)?\s*out|struck', str(lt.get('raw_text', '')), re.I):
             lt['raw_text'] = f"[CROSSED OUT] {lt.get('raw_text', '')}"
 
+    # A line saying dogs ("DOG'S", "dogs") that isn't a selection: the slip's numbers are traps where a meeting races
+    # horses and dogs both (number_bet_is_dog; 9.2458296, 30 Oct)
+    says_dogs = any(lt.get('kind') != 'selection' and not lt.get('struck')
+                    and re.search(r"\bdog'?s?\b", str(lt.get('raw_text', '')), re.I) for lt in lines_list)
     # Readers sometimes fill 'UNKNOWN' / null into meeting fields; treat those as nothing written
     for s in raw_selections:
+        if says_dogs:
+            s['_slip_says_dogs'] = True
         for key in ('meeting', 'raw_meeting_hint'):
             if key in s:
                 s[key] = _real_meeting(s[key], as_written=key == 'raw_meeting_hint')
@@ -2527,6 +2551,10 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
             line_is_explicit_ew = bool(re.search(r'\b(?:ew|e/w|each\s*way)\b', b_line_text))
             if line_is_explicit_win or desc_is_explicit_win or (orig_ew and line_is_explicit_ew):
                 continue  # Never flip a bet whose written line explicitly says WIN or EW
+            # Forecasts and tricasts have no each way: Betty ignores it, so the flip only hides the gap until the total
+            # check after entry (9.2458262, 30 Oct: a £1 straight forecast "each way" to make £4 into £5)
+            if not orig_ew and re.search(r'forecast|f/?cast|tricast', normalize_bet_type(str(bet.get('bet_type', '')))):
+                continue
             bet['each_way'] = not orig_ew
             if calc_total_pence - int(bet.get('cost_pence') or 0) + calculate_bet_cost_pence(bet) == target_pence:
                 flips.append(h_idx)
@@ -3149,7 +3177,8 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
                         'meeting': s_meeting or (s_raw_hint if s_raw_hint and len(s_raw_hint) > 2 else ''),
                         'line_num': s.get('line_num'),
                         'price': s_price,
-                        'number': s_num
+                        'number': s_num,
+                        '_slip_says_dogs': bool(s.get('_slip_says_dogs')),
                     }
 
     bet_kinds: dict[tuple, set] = {}  # selection -> the bet types it is in (single or not, for the dog rules)
@@ -3997,6 +4026,12 @@ class NavError(Exception):
 
 NAV_TIMEOUT = 4.0     # longest wait for Betty to change screen after one key press or click
 _nav_recovering = False  # backing out after a stop: keys are allowed although the watcher is stopping
+_home_unreachable = False  # the last go_home() ended away from Home: the watcher stops instead of trying again
+ESC_UNCHANGED_LIMIT = 2  # Esc presses in a row that leave Betty on the same screen before go_home gives up
+
+
+class HomeUnreachable(Exception):
+    """go_home() could not get Betty back to Home: staff must look, the watcher never presses on."""
 
 
 def _check_stop():
@@ -4131,30 +4166,45 @@ MODAL_BACK_OUT = {  # (button, the pop-up's box)
 def go_home(max_steps: int = 8) -> bool:
     """
     The safe reset: Esc (or the backing-out button of a pop-up) until Betty shows Home, checking after every step.
-    Returns True on Home. Never clicks blind: a pop-up button is clicked only where its label was read.
+    Returns True on Home. Never clicks blind: a pop-up button is clicked only where its label was read. When Esc leaves
+    Betty on the same screen ESC_UNCHANGED_LIMIT times, Betty is given the keyboard for one more; then it stops
+    (30 Oct, 15:33: 24 Esc on the runner list changed nothing). Sets _home_unreachable.
     """
-    global _nav_recovering
+    global _nav_recovering, _home_unreachable
     _nav_recovering = True
     try:
+        unchanged = 0  # Esc presses in a row that left Betty on the same (recognised) screen
         for _ in range(max_steps):
             screen = detect_screen()
             if screen == SCREEN_UNKNOWN:  # often Betty mid-redraw: let it settle before pressing anything
                 screen = wait_for_screen(ALL_SCREENS - {SCREEN_UNKNOWN}, timeout=1.5)
             if screen == SCREEN_HOME:
+                _home_unreachable = False
                 return True
             if screen in MODAL_BACK_OUT:
                 label, region = MODAL_BACK_OUT[screen]
                 spot = find_button(pyautogui.screenshot(), label, region)
                 if not spot:
                     print(f"[-] Backing out: '{label}' not found on {screen}; not clicking blind.")
+                    _home_unreachable = True
                     return False
                 print(f"[*] Backing out of {screen}: '{label}'")
                 betty_click(*spot)
             else:
+                if unchanged > ESC_UNCHANGED_LIMIT:
+                    print(f"[-] Backing out: Esc does nothing on {screen}; stopping.")
+                    break
+                if unchanged == ESC_UNCHANGED_LIMIT:
+                    print(f"[*] Esc did nothing on {screen} twice: giving Betty the keyboard before one more.")
+                    focus_betty()
                 print(f"[*] Backing out from {screen}: Esc")
                 betty_press('esc')
-            wait_for_screen({s for s in ALL_SCREENS if s != screen}, timeout=2.0)
-        return detect_screen() == SCREEN_HOME
+            after = wait_for_screen({s for s in ALL_SCREENS if s != screen}, timeout=2.0)
+            stuck = after == screen and screen != SCREEN_UNKNOWN and screen not in MODAL_BACK_OUT
+            unchanged = unchanged + 1 if stuck else 0
+        home = detect_screen() == SCREEN_HOME
+        _home_unreachable = not home
+        return home
     finally:
         _nav_recovering = False
 
@@ -4888,18 +4938,20 @@ def same_race(a: dict, b: dict) -> bool:
     return race(a) == race(b)
 
 
-def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: bool, both_kinds: bool) -> str | None:
+def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: bool, both_kinds: bool,
+                     reread_secs: float = MEETING_REREAD_SECS) -> str | None:
     """
     The meeting at the top of Betty's runner list: `meeting` only when the list is also the selection's kind (horses
-    or dogs), otherwise what was read ('Doncaster dogs', another meeting, None = unread).
+    or dogs), otherwise what was read ('Doncaster dogs', another meeting, None = unread after `reread_secs`).
     """
     # An unread top meeting is read again before 'right': read once mid-redraw, it was pressed past Dundalk 19:15
     # to the end of the list (9.2448555, 23 Oct)
     t_read = time.time()
     while True:
+        _check_stop()
         shot = pyautogui.screenshot()
         top = top_meeting_in_race_list(shot, candidates, prefer=meeting)
-        if top or time.time() - t_read > MEETING_REREAD_SECS:
+        if top or time.time() - t_read > reread_secs:
             break
         time.sleep(0.1)
     if top != meeting:
@@ -5007,6 +5059,15 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
             if screen == SCREEN_RACE_ENTRY_EXHAUSTED:
                 raise WagerForStaff(f"{meeting} {clock_12h(hhmm)} is not in Betty's runner list")
             top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds)
+            if top is None:
+                # Never 'right' on a list whose top wasn't read (9.2458229, 30 Oct: Newcastle 5:45 was already at the
+                # top, unread while Betty drew it; 'right' then swallowed the runner number and Enter)
+                top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds, reread_secs=NAV_TIMEOUT)
+                if top is None and candidates == [meeting] and not both_kinds:
+                    print(f"[*] Runner list top unread, but only {meeting} races at {clock_12h(hhmm)}: taken as {meeting}.")
+                    top = meeting
+                if top is None:
+                    raise WagerForStaff(f"the meeting at the top of Betty's {clock_12h(hhmm)} runner list could not be read")
             if top == meeting:
                 break
             # 'right' brings each meeting to the top in turn (user, 28 Oct: "this has always been the way"). Only
@@ -5348,6 +5409,29 @@ def bet_label_score(text: str, canon: str) -> float:
     return 1.0 - 0.1 * near[1]
 
 
+_f8_trail: list[str] = []  # keys sent on Choose Bet and Stake for the bet in hand, each marked when Betty had left it
+
+
+def _f8_key(key: str):
+    """
+    A key on Choose Bet and Stake, noting whether Betty still shows it just after (colours only, no OCR). Only for the
+    log: 9.2458229 (30 Oct) and 9.2455944 (28 Oct) went to Home after F8 and nothing said which key did it.
+    """
+    betty_press(key)
+    try:
+        arr = np.array(pyautogui.screenshot().convert('RGB'))
+        still = _signals_pass(arr, SCREEN_SIGNATURES[SCREEN_BET_AND_STAKE]['colours'])
+    except Exception:  # a screenshot that can't be read changes nothing here
+        still = True
+    _f8_trail.append(key if still else f"{key} (screen gone)")
+
+
+def _left_f8(screen: str, doing: str) -> Exception:
+    """The staff reason for Betty leaving Choose Bet and Stake, with the keys sent there printed first."""
+    print(f"[*] Keys on Choose Bet and Stake before it left: {', '.join(_f8_trail) or 'none'}")
+    return WagerForStaff(f"Betty left Choose Bet and Stake (now on {screen}) {doing}")
+
+
 def _find_bet_row(canon: str) -> tuple[int | None, list]:
     """
     Reads the bet-list page until it holds `canon` (row returned) or is settled without it (None): enough rows hold a
@@ -5380,7 +5464,7 @@ def _find_bet_row(canon: str) -> tuple[int | None, list]:
     # A blank list is often no list: Betty left the screen by itself just after F8 (9.2455944, 28 Oct: on Home twice)
     screen = detect_screen()
     if screen != SCREEN_BET_AND_STAKE:
-        raise WagerForStaff(f"Betty left Choose Bet and Stake (now on {screen}) while choosing '{canon}'")
+        raise _left_f8(screen, f"while choosing '{canon}'")
     raise WagerForStaff(f"Betty's bet list could not be read while looking for '{canon}'")
 
 
@@ -5397,18 +5481,18 @@ def choose_bet_type(canon: str, extending: bool = False):
             return
 
     if key:
-        betty_press(key)
+        _f8_key(key)
         time.sleep(0.08)
     for page in range(5):
         i, rows = _find_bet_row(canon)
         if i is not None:
             break
         print(f"[*] '{canon}' isn't on this page of the bet list: PgDn.")
-        betty_press('pagedown')  # the list pages round; bet types depend on the selections entered
+        _f8_key('pagedown')  # the list pages round; bet types depend on the selections entered
         time.sleep(0.08)
         screen = detect_screen()
         if screen != SCREEN_BET_AND_STAKE:
-            raise WagerForStaff(f"Betty left Choose Bet and Stake (now on {screen}) after PgDn while choosing '{canon}'")
+            raise _left_f8(screen, f"after PgDn while choosing '{canon}'")
     else:
         raise WagerForStaff(f"Betty's bet list has no '{canon}' for these selections")
     if rows[i][0] != label:
@@ -5445,13 +5529,14 @@ def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None 
         for _ in range(STAKE_BOX_DIGITS):
             betty_press('backspace')
             time.sleep(0.01)
-    _type_text(str(stake))
-    betty_press('enter')
+    for ch in str(stake):
+        _f8_key(ch)
+    _f8_key('enter')
     time.sleep(0.1)  # the each-way button is drawn after Enter (review R18)
     arr = np.array(pyautogui.screenshot().convert('RGB'))
     ew_on = _colour_share(arr, F8_EACH_WAY_BOX, F8_ROW_GREEN) >= 0.4
     if bool(bet.get('each_way')) != ew_on:
-        betty_press('e' if bet.get('each_way') else 'w')
+        _f8_key('e' if bet.get('each_way') else 'w')
     choose_bet_type(canon, extending=bets_before > 0)
     time.sleep(0.15)
     ew_str = 'Each Way' if bet.get('each_way') else 'Win Only'
@@ -5618,6 +5703,7 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
             # guarantee confirmed by its colour; the re-read failed on good slips (9.2452710). Payment is checked at F12.
             answer_entry_popups()
             bets_on_slip = 0
+            _f8_trail[:] = ['f8']
             betty_press('f8')
         expect_screen({SCREEN_BET_AND_STAKE}, doing="Choose Bet and Stake (F8)")
         refresh_watcher_hud(f"Bet {idx + 1}/{len(plan)}: {canon}, {bet.get('stake_pence')}p"
@@ -5626,7 +5712,8 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
         bets_on_slip += 1
         if idx < len(plan) - 1:
             if same_selections(plan[idx + 1][0], bet):
-                betty_press('f11')  # extend: same selections, next bet type
+                _f8_trail.clear()
+                _f8_key('f11')  # extend: same selections, next bet type
                 time.sleep(0.2)
             else:
                 betty_press('f10')  # new betting slip
@@ -5980,7 +6067,7 @@ def watcher_cycle():
     if screen not in (SCREEN_HOME, SCREEN_VIEW_WAGERS):
         print(f"[*] Watcher found Betty on {screen}: backing out to Home first.")
         if not go_home():
-            raise NavError(f"could not get back to Home from {screen}")
+            raise HomeUnreachable(f"could not get back to Home from {screen}")
     open_view_wagers()
     queue = read_unedited_queue(pyautogui.screenshot())
     now = time.time()
@@ -6085,6 +6172,14 @@ def watcher_loop():
                     _go_home_from_handler()
                     alert_staff(f"Wager {number} needs staff: {e}. Could NOT mark it FAO - please check Betty.")
                     STATUS_HUD.set_outcome(f"{number} -> staff: {e} {time.strftime('%H:%M')}")
+            if _home_unreachable:  # backing out for the FAO failed: the next look would only press Esc again
+                watcher_on.clear()
+                notify("Could not get Betty back to Home. Watcher off: please check Betty.", is_error=True)
+        except HomeUnreachable as e:
+            print(f"[-] Watcher: {e}. Watcher off.")
+            STATUS_HUD.set_outcome(f"problem: {e}")
+            watcher_on.clear()
+            notify(f"Watcher stopped: {e}. Please check Betty.", is_error=True)
         except NavError as e:
             if _current_wager:  # a navigation glitch is not the wager's fault: one more go before leaving it
                 _nav_failures[_current_wager] = _nav_failures.get(_current_wager, 0) + 1

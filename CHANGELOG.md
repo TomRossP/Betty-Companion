@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.1.2] - 2026-10-30
+
+Fixes from the cashier till's logs of 30 Oct (written on the cashier till, applied and tested here). Not built yet.
+
+### Fixed
+- **A bare number at a meeting racing horses and dogs is the dog when the slip says dogs or only the dogs race there then** (9.2458296: '6 £2w 4.28 NCLE' under 'DOG'S' was taken for a Newcastle horse, and with no horse race then Rule 1.8.4 split it over four races abroad). A non-selection line saying dogs marks the slip (`_slip_says_dogs`); otherwise a dog race within `DOG_TIME_AGREE_MINS` and no horse race within `TIME_AGREE_MINS` decides it (`_only_dogs_race_then`). 'NCLE' is now a Newcastle alias in `meetings_directory.json`: it matched no meeting in 1.1.1.
+- **The each-way healer never flips a forecast or tricast** (9.2458262: a £1 straight forecast made each way to turn £4 into £5; Betty ignores each way there, so it went to staff after entry).
+- **No 'right' on a runner list whose top meeting wasn't read** (9.2458229, 15:33: Newcastle 5:45 was already at the top, unread mid-redraw; 'right' swallowed the runner number and Enter). The top is read again for up to `NAV_TIMEOUT`; still unread, it's taken as the meeting only when that is the one meeting then and horses and dogs don't share its label, else the wager goes to staff. The re-read honours Esc.
+- **`go_home` stops when Esc changes nothing** (9.2458229, 15:33: 24 Esc on the runner list, and the wager never marked FAO). After `ESC_UNCHANGED_LIMIT` (2) unchanged screens Betty is given the keyboard for one more Esc, then it gives up (`_home_unreachable`). The watcher then switches off instead of backing out again (`HomeUnreachable`).
+
+### Added
+- **The keys sent on Choose Bet and Stake are logged when Betty leaves it** (9.2458229 16:11, 9.2455944 28 Oct: Home after F8, cause unknown). Each key notes whether the screen's colours still showed it just after (`_f8_key`, `_left_f8`); diagnosis only.
+- Error guide: "Runner list couldn't be read"; "Betty left the bet screen" now points to the keys line.
+- Tests: `fixes_30oct_cases.py`; `nav_cases` section 12.
+
 ## [1.1.1] - 2026-10-30
 
 Dead code and tidy-ups from the code review. Nothing the program does changes.
