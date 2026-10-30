@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.1.1] - 2026-10-30
+
+Dead code and tidy-ups from the code review. Nothing the program does changes.
+
+### Removed
+- **D1** The 1024x576 calibration, `is_scaled_display` and `get_f8_metrics`: only the 1366x768 bet-list layout is used (`F8_ROW_HEIGHT_1368`, `F8_BET_LIST_REGION_1368`, `F8_NUM_ROWS`).
+- **D2** `BET_SHORTCUTS` and `PAGE_1_BET_ROWS` (`ENTRY_BET_TYPES` holds the keys used); `entry_cases` checks Patent's 'o' there.
+- **D7** `official_time`, stored and never read. **D12** `get_virtual_meetings`, `get_course_aliases`, an always-true `'__file__' in globals()`. **D13** `BettyFeedCard.get_lines`. **D6** the HUD's `is_visible` flag and the `resolve_betansells_discrepancies` alias.
+
+### Changed
+- **T9** the merged-doubles label keeps "£1.50" (was "£1.5"). **T12** `WORD_TO_NUM` is built once. **P1** Rule 1.8.4 compares runners by identity, not whole records across ~13,000 runners.
+- Left by choice (see `scratch/code_review_2026-10-28.md`): T8 (the tests' stand-in cards have no `refresh()`), D3 (`check_slip_before_f8` drives the betslip tests), D4 (use or remove `READBACK_NAMES` is a decision), D5, D8-D11, T1, T4-T6, T10, T11, P3.
+
 ## [1.1.0] - 2026-10-30
 
 The to-do list (`todolist.md`), all three items.

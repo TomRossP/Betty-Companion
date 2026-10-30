@@ -208,7 +208,7 @@ class MeetingsDirectoryManager:
 
     def __init__(self, config_path: str | None = None):
         if config_path is None:
-            script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
+            script_dir = os.path.dirname(os.path.abspath(__file__))
             config_path = os.path.join(script_dir, "meetings_directory.json")
         self.config_path = config_path
         self._last_mtime: float = 0.0
@@ -323,20 +323,10 @@ class MeetingsDirectoryManager:
         self._check_and_reload()
         return self.greyhound_map
 
-    def get_virtual_meetings(self) -> dict[str, dict]:
-        """Returns flat dictionary mapping {clean_alias: virtual_info}."""
-        self._check_and_reload()
-        return self.virtual_map
-
     def get_international_meetings(self) -> dict[str, str]:
         """Returns flat dictionary mapping {clean_alias: canonical_name}."""
         self._check_and_reload()
         return self.international_map
-
-    def get_course_aliases(self) -> dict[str, str]:
-        """Returns flat dictionary mapping {prefix: course_name}."""
-        self._check_and_reload()
-        return self.course_alias_map
 
     def is_virtual_meeting(self, meeting_name: str, prefixes: bool = True) -> tuple[bool, str | None, str | None]:
         """

@@ -141,6 +141,9 @@ def parse_race_time_to_minutes(time_str: str) -> tuple[int | None, str | None]:
     return None, None
 
 
+WORD_TO_NUM = {'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
+
+
 def race_time_options(time_str: str) -> set[int]:
     """
     The minutes from midnight a written time can mean. 9, 10 and 11 o'clock can be morning or evening on a 12-hour
@@ -230,9 +233,6 @@ def normalize_bet_type(bet_type: str, desc: str = "", names=()) -> str:
     # Permutation Folds vs. Straight Accumulators:
     # If the text explicitly mentions 'accumulator' or 'acca', or specifies a single line '1 x ... fold',
     # it is a straight Accumulator, NOT a multi-bet permutation.
-    WORD_TO_NUM = {
-        'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
-    }
     m_wfold = re.search(r'\b(?:perm\s*)?(two|three|four|five|six|seven|eight|nine|ten)[- ]?folds?\b', raw)
     if m_wfold:
         n_f = WORD_TO_NUM[m_wfold.group(1)]
@@ -1214,4 +1214,3 @@ def resolve_discrepancies(
 # Backward-compatibility Aliases
 # -----------------------------------------------------------------------------
 resolve_bookmaker_discrepancies = resolve_discrepancies
-resolve_betansells_discrepancies = resolve_discrepancies

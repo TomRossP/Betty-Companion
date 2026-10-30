@@ -305,9 +305,6 @@ class BettyFeedCard:
         self.get_runners()
         return self._meetings
 
-    def get_lines(self) -> list[str]:
-        return [r["name"].lower() for r in self.get_runners()]
-
 
 OFF_TRANS_TYPE = "87"  # transact.DBF: Betty's off slip, one per event sent off
 OFF_READ_BACK = 20000  # records read back at a time to find the start of the day

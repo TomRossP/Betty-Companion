@@ -1,4 +1,4 @@
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -223,11 +223,6 @@ def get_screen_resolution() -> tuple[int, int]:
     return (1024, 576)
 
 
-def is_scaled_display() -> bool:
-    """Returns True if the system screen width exceeds 1200px (e.g. 1368x768 or 1366x768)."""
-    return get_screen_resolution()[0] > 1200
-
-
 # --- 1. ENGINE SETUP ---
 TESSERACT_EXE = app_paths.find_tesseract()  # shipped with the program first, then an installed one
 if TESSERACT_EXE:
@@ -259,67 +254,10 @@ GEMINI_FREE_KEYS = _key_list(*[f"GEMINI_API_KEY_{i}" for i in range(2, 12)])    
 
 SLIP_REGION = (491, 78, 365, 505)  # INVARIANT: Preserved per project constraints
 
-# Betslip Selections & Guarantee Sweep Calibration
-# Calibrated for both native 1024x576 and 1368x768 / 1366x768 scaled displays.
-# NOTE: Clicks must strictly target the runner name / cloth text on the left side of the slip.
-# The far right side contains the red 'Remove' button, which must never be clicked!
-
-
-# F8 Screen Bet Selection List Calibration
-# Calibrated for both 1024x576 native and 1368x768 / 1366x768 scaled displays.
-F8_TABLE_TOP_Y_1024 = 95                       # Top Y of Row 1 in Betty F8 bet list (1024x576)
-F8_TABLE_TOP_Y_1368 = 127                      # Top Y of Row 1 in Betty F8 bet list (1368x768)
-F8_TABLE_TOP_Y = F8_TABLE_TOP_Y_1368 if is_scaled_display() else F8_TABLE_TOP_Y_1024
-
-F8_ROW_HEIGHT_1024 = 26.0                      # Exact row height in Betty F8 bet list (1024x576)
-F8_ROW_HEIGHT_1368 = 34.67                     # Exact row height in Betty F8 bet list (1368x768)
-F8_ROW_HEIGHT = F8_ROW_HEIGHT_1368 if is_scaled_display() else F8_ROW_HEIGHT_1024
-
-F8_NUM_ROWS = 11                               # 11 selectable bet rows on Page 1
-
-F8_ROW_CLICK_X_1024 = 110                      # Centroid X for clicking bet rows (1024x576)
-F8_ROW_CLICK_X_1368 = 147                      # Centroid X for clicking bet rows (1368x768)
-F8_ROW_CLICK_X = F8_ROW_CLICK_X_1368 if is_scaled_display() else F8_ROW_CLICK_X_1024
-
-F8_BET_LIST_REGION_1024 = (6, 95, 209, 286)    # Bounding box of 11 bet rows on Page 1 (1024x576)
-F8_BET_LIST_REGION_1368 = (8, 127, 279, 381)   # Bounding box of 11 bet rows on Page 1 (1368x768)
-F8_BET_LIST_REGION = F8_BET_LIST_REGION_1368 if is_scaled_display() else F8_BET_LIST_REGION_1024
-
-
-# F8 Screen Buttons & Selection Colors
-F8_OTHER_BETS_COORD_1024 = (53, 417)           # Centroid of yellow "Other Bets" button (1024x576)
-F8_OTHER_BETS_COORD_1368 = (71, 556)           # Centroid of yellow "Other Bets" button (1368x768)
-F8_OTHER_BETS_COORD = F8_OTHER_BETS_COORD_1368 if is_scaled_display() else F8_OTHER_BETS_COORD_1024
-
-
-# Target UI Colors
-TARGET_YELLOW = (255, 255, 128)
-
-# Ready State Variables (Yellow Prompt/Input Box Centroid)
-# Native 1024x576 centroid: (332, 346) [BBox: X: 301..362, Y: 337..355]
-# Scaled 1368x768 centroid: (443, 461) [BBox: X: 402..483, Y: 450..473]
-READY_COORD_1024 = (332, 346)
-READY_COORD_1368 = (443, 461)
-READY_COORD = READY_COORD_1368 if is_scaled_display() else READY_COORD_1024
-
-# Blue Price Discrepancy Dialog Calibration
-# The modal box has a solid 6px blue border bounding:
-# - 1024x576: X: 299..766, Y: 215..472
-# - 1366x768 / 1368x768: X: 400..1022, Y: 287..629 (Top border: x815, y290 is RGB 0,0,255)
-
-# Price Override Button inside Blue Dialog: "Override with entered price"
-# Bounded at 1024x576: X: 671..754, Y: 403..458 (Exact button center: 712, 430)
-# Bounded at 1366x768 / 1368x768: X: 895..1006, Y: 537..610 (Exact button center: 953, 567)
-
-# F8 Screen Cancel Bet Button (yellow button: native 719, 529; scaled 959, 705)
-
-# Late Selection / Void Selection Processing Dialog Calibration
-# Red border at (692, 292) with RGB (255, 0, 0); Yes button at (589, 504)
-
-
-# Scroll Arrow (Red button with yellow down arrow to show remaining runners)
-
-# Race time entry formatting: False = "14:15" (standard), True = "1415" (digits-only)
+# Betty's bet list on Choose Bet and Stake (F8) at 1366x768, the only screen size the program runs at
+F8_ROW_HEIGHT_1368 = 34.67                     # row height
+F8_NUM_ROWS = 11                               # selectable bet rows on a page
+F8_BET_LIST_REGION_1368 = (8, 127, 279, 381)   # the 11 rows of a page
 
 
 # --- GLOBAL DAEMON & CACHE STATE ---
@@ -420,7 +358,6 @@ class CompactHUD:
         self.lbl_outcome = None  # last wager outcome
         self.rect = (0, 0, 0, 0)  # screen box of the HUD, so clicks on it are not taken as staff using Betty
         self.home: tuple[int, int] | None = None  # its bottom-right corner position, set when the window opens
-        self.is_visible = True
         self._reset_timer = None
         self._drag_x = 0
         self._drag_y = 0
@@ -1042,6 +979,7 @@ def unnamed_by_timing_rule(horse: dict, pools: list[list[dict]], struck_mins: fl
                 seen.add(id(r))
                 every.append(r)
     at_meeting_all = [r for r in every if hinted and _meeting_matches(r['meeting'], hinted)]
+    at_meeting_ids = {id(r) for r in at_meeting_all}
     if times:
         timed = [r for r in at_meeting_all if fits(r)]
         if timed:
@@ -1060,7 +998,7 @@ def unnamed_by_timing_rule(horse: dict, pools: list[list[dict]], struck_mins: fl
         # A race at the very time written beats races only near it, whatever their kind (9.2455858, 28 Oct: trap 1
         # at 3.13 was split over horse races at 15:06, 15:16 and 15:21, not the Sunderland dogs at 15:13)
         for window in (0, TIME_AGREE_MINS):
-            other = [r for r in every if r not in at_meeting_all and (favourite or r.get('number') == number)
+            other = [r for r in every if id(r) not in at_meeting_ids and (favourite or r.get('number') == number)
                      and fits(r, window) and still_to_run(r, now)]
             for tier in TIME_CLASH_ORDER:
                 group = {(r['meeting'], r['time_str']): r for r in other if r.get('category', 'domestic') == tier}
@@ -1954,7 +1892,7 @@ def reconcile_bet_scoping_qualifiers(
                     has_3x = bool(re.search(r'\b3\s*x\b', f"{b_curr.get('description', '')} {b_next.get('description', '')}", re.I))
                     if has_3x:
                         unit_sp = b_curr.get('stake_pence') or b_next.get('stake_pence') or 50
-                        stake_lbl = f"{unit_sp}p" if unit_sp < 100 else f"£{unit_sp / 100:.2f}".rstrip('0').rstrip('.')
+                        stake_lbl = f"{unit_sp}p" if unit_sp < 100 else (f"£{unit_sp // 100}" if unit_sp % 100 == 0 else f"£{unit_sp / 100:.2f}")
                         ew_label = "Win" if has_win else "EW"
                         print(f"[+] Merged split-line doubles '{b_curr.get('description')}' and '{b_next.get('description')}' into '3 x {stake_lbl} {ew_label} Doubles':")
                         b_next['horses'] = b_next.get('horses') if len(b_next.get('horses', [])) == 3 else b_curr.get('horses')
@@ -2065,81 +2003,7 @@ def consolidate_identical_stake_singles(bets_list: list[dict]) -> list[dict]:
     return merged
 
 
-# --- UK BETTING SHORTCUTS & LINE COUNTS ---
-# Note: In Betty EPOS, keyboard shortcuts trigger specific bets:
-# 's' -> Single (Row 1), 'd' -> Double (Row 2), 'q' -> Accumulator (Row 4),
-# 'y' -> Yankee (Row 6), 'l' -> Lucky 15 (Row 7), 'p' -> Patent (Row 8), 'j' -> Lucky 31 (Row 9).
-# CRITICAL: In Betty EPOS, keyboard shortcuts exist for Single ('s') and Double ('d').
-# Treble (Row 3, Y=160) and Accumulator (Row 4, Y=186) do not have reliable single-key
-# shortcuts in Betty and are selected directly by clicking their row centroids.
-BET_SHORTCUTS: dict[str, str] = {
-    'single': 's',
-    'singles': 's',
-    'win': 's',
-    'double': 'd',
-    'doubles': 'd',
-    'straight forecast': 'f',
-    'sfc': 'f',
-    's/f/c': 'f',
-    'straight f/c': 'f',
-    'str f/c': 'f',
-    'str fc': 'f',
-    'sf': 'f',
-    'reversed forecast': 'r',
-    'rfc': 'r',
-    'r/f/c': 'r',
-    'reversed f/c': 'r',
-    'reverse f/c': 'r',
-    'rev f/c': 'r',
-    'rev fc': 'r',
-    'rf': 'r',
-    'reverse forecast': 'r',
-    'combination forecast': 'c',
-    'cfc': 'c',
-    'c/f/c': 'c',
-    'comb f/c': 'c',
-    'comb fc': 'c',
-    'cf': 'c',
-    'patent': 'o',  # Betty's Patent key is 'o' (not 'p')
-    'patents': 'o',
-    'pat': 'o',
-    'yankee': 'y',
-    'yankees': 'y',
-    'yank': 'y',
-    'lucky 15': 'l',
-    'lucky15': 'l',
-    'l15': 'l',
-    'l 15': 'l',
-    '4 l15': 'l',
-    'lucky 31': 'j',
-    'lucky31': 'j',
-    'l31': 'j',
-    'l 31': 'j',
-    '5 l31': 'j'
-}
-
-# Deterministic Page 1 Row Index Mapping in Betty F8 Bet List (0-indexed, Rows 1..11: Y=95..381)
-PAGE_1_BET_ROWS: dict[str, int] = {
-    'single': 0, 'singles': 0, 'win': 0,
-    'double': 1, 'doubles': 1,
-    'treble': 2, 'trebles': 2,
-    'accumulator': 3, 'acca': 3, 'accumulators': 3, 'acc on all selns': 3,
-    'doubles + trebles': 4, 'doubles and trebles': 4, 'doubles+trebles': 4,
-    'yankee': 5, 'yankees': 5,
-    'lucky 15': 6, 'lucky15': 6, 'l15': 6, 'l 15': 6, '4 l15': 6,
-    'patent': 7, 'patent or twist': 7, 'patents': 7, 'twist': 7, 'pat': 7,
-    'lucky 31': 8, 'lucky31': 8, 'l31': 8, 'l 31': 8, '5 l31': 8,
-    'lucky 63': 9, 'lucky63': 9, 'l63': 9, 'l 63': 9,
-    'flag': 10,
-}
-
-
 # --- F8 SCREEN BET LIST OCR SCANNER & SELECTION ENGINE ---
-
-
-def get_f8_metrics() -> tuple[tuple[int, int, int, int], float, int, int, tuple[int, int]]:
-    """Returns resolution-calibrated metrics for Betty's F8 screen: (list_region, row_h, row_x, top_y, other_bets_coord)."""
-    return F8_BET_LIST_REGION, F8_ROW_HEIGHT, F8_ROW_CLICK_X, F8_TABLE_TOP_Y, F8_OTHER_BETS_COORD
 
 
 def ocr_f8_row_text(row_index: int, list_img: Any = None) -> str:
@@ -3210,7 +3074,7 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
     print("=" * 60)
 
     # Every horse and greyhound card Betty has, read fresh (not up to RECHECK_SECS old): a feed Betty added moments ago counts
-    fresh = lambda card: card.refresh() if hasattr(card, 'refresh') else card.get_runners()
+    fresh = lambda card: card.refresh() if hasattr(card, 'refresh') else card.get_runners()  # tests' cards: get_runners
     runners = race_offs.mark(fresh(racecard_manager) + fresh(greyhound_card))  # with when each race went off
     _meeting_match_cache.clear()  # the cards and the meetings directory as they are now
     if not runners:
@@ -3283,7 +3147,6 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
                         'raw_time': s.get('raw_time') if s.get('raw_time') and parse_race_time_to_minutes(str(s.get('raw_time')))[0] is not None else s_time,
                         'raw_meeting_hint': s_raw_hint,
                         'meeting': s_meeting or (s_raw_hint if s_raw_hint and len(s_raw_hint) > 2 else ''),
-                        'official_time': s.get('official_time', s.get('time', '')),
                         'line_num': s.get('line_num'),
                         'price': s_price,
                         'number': s_num
