@@ -9,9 +9,10 @@ The window runs the program as a second process and talks to it through pipes: c
 (start, pause, test, live, status, quit), status events as JSON lines on its stdout (betty_companion section 7).
 When the window closes, its end of the pipe closes and the program shuts down, so it never runs unwatched.
 
-Tabs: Controls (Start / Pause / Stop, test or live, pairing with the relay), System (this run's and the previous run's
-log, the errors explained, what staff had to do), Data (today's racecard files and meetings), Runners (every UK & Irish
-horse runner today). The bar at the bottom always shows whether it's ready to automate and whether Gemini is online.
+Tabs: Controls (Start / Pause / Stop, the live / test switch), System (this run's and the previous run's log, the
+errors explained, what staff had to do, and Settings: pairing with the relay), Data (today's racecard files and
+meetings), Runners (every UK & Irish horse runner today). The bar at the bottom always shows whether it's ready to
+automate (hover for why not) and whether Gemini is online.
 """
 import collections
 import ctypes
@@ -28,7 +29,11 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
+from functools import lru_cache
 from tkinter import messagebox, ttk
+
+from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 import app_paths
 
@@ -43,6 +48,8 @@ CREATE_NO_WINDOW = 0x08000000
 
 GREEN, RED, AMBER, GREY = "#2E7D32", "#C62828", "#F9A825", "#78909C"
 LIVE_COLOUR, TEST_COLOUR = "#E65100", "#4A148C"  # the overlay's colours: orange = live, purple = test
+BAR_BG = "#263238"
+SWITCH_OFF = "#B0BEC5"
 
 
 def app_version() -> str:
@@ -314,6 +321,178 @@ def staff_from_logs(paths: list[str]) -> list[dict]:
     return found
 
 
+# --- Drawn widgets: rounded buttons, the live / test switch, status dots ---
+# Drawn with Pillow at SS times the size and scaled down, so the edges are smooth (tk's own canvas shapes are jagged),
+# onto the parent's background colour, so nothing relies on transparency.
+
+SS = 4
+BUTTON_PAD = 4  # room around a button for its shadow
+
+
+def _rgb(widget: tk.Misc, colour: str) -> tuple[int, int, int]:
+    r, g, b = widget.winfo_rgb(colour)
+    return r >> 8, g >> 8, b >> 8
+
+
+def _mix(a: tuple, b: tuple, t: float) -> tuple[int, int, int]:
+    """a moved t of the way to b."""
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def _background(widget: tk.Misc) -> str:
+    """The colour behind a widget placed in `widget` (a tk or ttk frame)."""
+    try:
+        return widget.cget("background")
+    except tk.TclError:  # ttk: the theme's colour
+        return ttk.Style(widget).lookup(widget.winfo_class(), "background") or "SystemButtonFace"
+
+
+@lru_cache(maxsize=None)
+def _button_image(w: int, h: int, fill: tuple, bg: tuple, border: tuple | None, shadow: bool) -> Image.Image:
+    """A rounded button w x h with a soft top-lit gradient and a drop shadow, BUTTON_PAD inside its image."""
+    pad, radius = BUTTON_PAD * SS, 9 * SS
+    size = ((w + 2 * BUTTON_PAD) * SS, (h + 2 * BUTTON_PAD) * SS)
+    box = (pad, pad, pad + w * SS - 1, pad + h * SS - 1)
+    img = Image.new("RGB", size, bg)
+    if shadow:
+        mask = Image.new("L", size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((box[0], box[1] + 2 * SS, box[2], box[3] + 2 * SS), radius, fill=60)
+        img.paste((0, 0, 0), mask=mask.filter(ImageFilter.GaussianBlur(2.5 * SS)))
+    top = _mix(fill, (255, 255, 255), 0.14)
+    column = Image.new("RGB", (1, size[1]))
+    column.putdata([_mix(top, fill, min(1.0, max(0.0, (y - pad) / (h * SS)))) for y in range(size[1])])
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(box, radius, fill=255)
+    img.paste(column.resize(size), mask=mask)
+    if border:
+        ImageDraw.Draw(img).rounded_rectangle(box, radius, outline=border, width=SS)
+    return img.resize((w + 2 * BUTTON_PAD, h + 2 * BUTTON_PAD), Image.LANCZOS)
+
+
+@lru_cache(maxsize=None)
+def _switch_image(w: int, h: int, on: tuple, off: tuple, bg: tuple, t: float) -> Image.Image:
+    """The switch t of the way from off (0, knob left, grey track) to on (1, knob right, coloured track)."""
+    size = (w * SS, h * SS)
+    img = Image.new("RGB", size, bg)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), size[1] // 2, fill=_mix(off, on, t))
+    inset = 3 * SS
+    knob = size[1] - 2 * inset
+    x = inset + round(t * (size[0] - size[1]))
+    shadow = Image.new("L", size, 0)
+    ImageDraw.Draw(shadow).ellipse((x, inset + SS, x + knob, inset + knob + SS), fill=70)
+    img.paste((0, 0, 0), mask=shadow.filter(ImageFilter.GaussianBlur(1.5 * SS)))
+    draw.ellipse((x, inset, x + knob, inset + knob), fill=(255, 255, 255))
+    return img.resize((w, h), Image.LANCZOS)
+
+
+@lru_cache(maxsize=None)
+def _dot_image(d: int, fill: tuple, bg: tuple) -> Image.Image:
+    img = Image.new("RGB", (d * SS, d * SS), bg)
+    ImageDraw.Draw(img).ellipse((0, 0, d * SS - 1, d * SS - 1), fill=fill)
+    return img.resize((d, d), Image.LANCZOS)
+
+
+class RoundButton(tk.Canvas):
+    """
+    A rounded button with a soft shadow, and hover, pressed and disabled shades. Takes configure(text=, state=) like
+    a tk.Button. `primary` buttons are filled with `colour`; the others are white with a thin border.
+    """
+
+    def __init__(self, parent, text: str, command, colour: str = "#FFFFFF", fg: str = "#263238",
+                 width: int | None = None, height: int = 32, font=("Segoe UI Semibold", 10), primary: bool = False):
+        self.bg = _background(parent)
+        self.font = tkfont.Font(parent, font=font)
+        self.fixed_width, self.h = width, height
+        self.w = width or 0
+        super().__init__(parent, height=height + 2 * BUTTON_PAD, bg=self.bg, highlightthickness=0, bd=0, cursor="hand2")
+        self.command, self.colour, self.fg, self.primary = command, colour, fg, primary
+        self.text, self.state, self.look = text, "normal", "normal"
+        self.photos: dict[str, ImageTk.PhotoImage] = {}
+        self.image = self.create_image(0, 0, anchor="nw")
+        self.label = self.create_text(0, 0, text=text, font=self.font)
+        self.bind("<Enter>", lambda e: self._look("hover"))
+        self.bind("<Leave>", lambda e: self._look("normal"))
+        self.bind("<ButtonPress-1>", lambda e: self._look("pressed"))
+        self.bind("<ButtonRelease-1>", self._release)
+        self._draw()
+
+    def _draw(self):
+        self.w = self.fixed_width or self.font.measure(self.text) + 36
+        bg = _rgb(self, self.bg)
+        fill = _rgb(self, self.colour)
+        border = None if self.primary else _rgb(self, "#CFD8DC")
+        hover = _mix(fill, (255, 255, 255), 0.1) if self.primary else _mix(fill, (0, 0, 0), 0.04)
+        shades = {"normal": fill, "hover": hover, "pressed": _mix(fill, (0, 0, 0), 0.14 if self.primary else 0.08),
+                  "disabled": _mix(fill, bg, 0.55)}
+        self.photos = {look: ImageTk.PhotoImage(_button_image(self.w, self.h, shade, bg, border, look != "disabled"))
+                       for look, shade in shades.items()}
+        tk.Canvas.configure(self, width=self.w + 2 * BUTTON_PAD)
+        self.coords(self.label, BUTTON_PAD + self.w / 2, BUTTON_PAD + self.h / 2)
+        self._paint()
+
+    def _paint(self):
+        look = "disabled" if self.state == "disabled" else self.look
+        self.itemconfigure(self.image, image=self.photos[look])
+        fg = _mix(_rgb(self, self.fg), _rgb(self, self.bg), 0.45) if self.state == "disabled" else _rgb(self, self.fg)
+        self.itemconfigure(self.label, text=self.text, fill="#%02x%02x%02x" % fg)
+        tk.Canvas.configure(self, cursor="arrow" if self.state == "disabled" else "hand2")
+
+    def _look(self, look: str):
+        self.look = look
+        self._paint()
+
+    def _release(self, e):
+        inside = 0 <= e.x < self.winfo_width() and 0 <= e.y < self.winfo_height()
+        self._look("hover" if inside else "normal")
+        if inside and self.state != "disabled" and self.command:
+            self.command()
+
+    def configure(self, cnf=None, **kw):
+        text, state = kw.pop("text", None), kw.pop("state", None)
+        if kw or cnf:
+            super().configure(cnf, **kw)
+        if text is not None and text != self.text:
+            self.text = text
+            self._draw()
+        if state is not None and state != self.state:
+            self.state = state
+            self._paint()
+
+    config = configure
+
+
+class Switch(tk.Canvas):
+    """A phone-style on / off switch. A click calls `command`; set() moves it (with a short slide)."""
+    FRAMES = 7
+
+    def __init__(self, parent, command, on_colour: str, off_colour: str = SWITCH_OFF, width: int = 46, height: int = 26):
+        bg = _background(parent)
+        super().__init__(parent, width=width, height=height, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
+        on, off, back = _rgb(self, on_colour), _rgb(self, off_colour), _rgb(self, bg)
+        self.frames = [ImageTk.PhotoImage(_switch_image(width, height, on, off, back, i / (self.FRAMES - 1)))
+                       for i in range(self.FRAMES)]
+        self.pos, self.target = 0, None
+        self.image = self.create_image(0, 0, anchor="nw", image=self.frames[0])
+        self.bind("<Button-1>", lambda e: command())
+
+    def set(self, on: bool):
+        target = self.FRAMES - 1 if on else 0
+        if self.target is None:  # the first time: no slide
+            self.pos = target
+            self.itemconfigure(self.image, image=self.frames[target])
+        if target != self.target:
+            self.target = target
+            self._slide()
+
+    def _slide(self):
+        if self.pos == self.target:
+            return
+        self.pos += 1 if self.target > self.pos else -1
+        self.itemconfigure(self.image, image=self.frames[self.pos])
+        self.after(16, self._slide)
+
+
 # --- The window ---
 
 class App:
@@ -339,6 +518,7 @@ class App:
         self.log_offset = 0
         self.backend_log = ""
         self._image = None
+        self.dot_photos: dict[str, ImageTk.PhotoImage] = {}
         self.records: list[dict] = []
         self.staff_rows: dict[str, dict] = {}
         self.error_rows: dict[str, dict] = {}
@@ -381,26 +561,48 @@ class App:
     # --- Building the tabs ---
 
     def _build_status_bar(self):
-        bar = tk.Frame(self.root, bg="#263238")
+        bar = tk.Frame(self.root, bg=BAR_BG)
         bar.pack(side="bottom", fill="x")
-        self.ready_dot = tk.Canvas(bar, width=16, height=16, bg="#263238", highlightthickness=0)
-        self.ready_dot.pack(side="left", padx=(10, 4), pady=6)
-        self.ready_text = tk.Label(bar, text="Checking...", fg="#FFFFFF", bg="#263238", font=("Segoe UI", 10, "bold"))
+        self.ready_dot = tk.Canvas(bar, width=16, height=16, bg=BAR_BG, highlightthickness=0)
+        self.ready_dot.pack(side="left", padx=(10, 6), pady=6)
+        self.ready_text = tk.Label(bar, text="Checking", fg="#FFFFFF", bg=BAR_BG, font=("Segoe UI Semibold", 10))
         self.ready_text.pack(side="left")
-        tk.Label(bar, text=self.version and f"v{self.version}", fg="#B0BEC5", bg="#263238",
+        self.ready_detail = ""  # why it isn't ready, shown on hover
+        self.ready_tip: tk.Toplevel | None = None
+        for w in (self.ready_dot, self.ready_text):
+            w.bind("<Enter>", lambda e: self._show_ready_tip())
+            w.bind("<Leave>", lambda e: self._hide_ready_tip())
+        tk.Label(bar, text=self.version and f"v{self.version}", fg="#B0BEC5", bg=BAR_BG,
                  font=("Segoe UI", 9)).pack(side="right", padx=10)
-        self.gemini_text = tk.Label(bar, text="Gemini: checking...", fg="#FFFFFF", bg="#263238",
+        self.gemini_text = tk.Label(bar, text="Gemini: checking...", fg="#FFFFFF", bg=BAR_BG,
                                     font=("Segoe UI", 10), cursor="hand2")
         self.gemini_text.pack(side="right", padx=(0, 16))
-        self.gemini_dot = tk.Canvas(bar, width=16, height=16, bg="#263238", highlightthickness=0, cursor="hand2")
-        self.gemini_dot.pack(side="right", padx=(10, 4))
+        self.gemini_dot = tk.Canvas(bar, width=16, height=16, bg=BAR_BG, highlightthickness=0, cursor="hand2")
+        self.gemini_dot.pack(side="right", padx=(10, 6))
         for w in (self.gemini_text, self.gemini_dot):
             w.bind("<Button-1>", lambda e: self.check_gemini(force=True))
 
-    @staticmethod
-    def _dot(canvas: tk.Canvas, colour: str):
+    def _dot(self, canvas: tk.Canvas, colour: str):
+        if colour not in self.dot_photos:
+            self.dot_photos[colour] = ImageTk.PhotoImage(_dot_image(12, _rgb(canvas, colour), _rgb(canvas, BAR_BG)))
         canvas.delete("all")
-        canvas.create_oval(2, 2, 14, 14, fill=colour, outline="")
+        canvas.create_image(8, 8, image=self.dot_photos[colour])
+
+    def _show_ready_tip(self):
+        self._hide_ready_tip()
+        if not self.ready_detail:
+            return
+        tip = self.ready_tip = tk.Toplevel(self.root)
+        tip.wm_overrideredirect(True)
+        tk.Label(tip, text=self.ready_detail, bg="#37474F", fg="#FFFFFF", font=("Segoe UI", 9), justify="left",
+                 padx=10, pady=6).pack()
+        tip.update_idletasks()
+        tip.geometry(f"+{self.ready_dot.winfo_rootx()}+{self.ready_dot.winfo_rooty() - tip.winfo_height() - 10}")
+
+    def _hide_ready_tip(self):
+        if self.ready_tip is not None:
+            self.ready_tip.destroy()
+            self.ready_tip = None
 
     def _build_controls(self):
         tab = ttk.Frame(self.tabs, padding=14)
@@ -408,18 +610,24 @@ class App:
 
         buttons = tk.Frame(tab)
         buttons.pack(fill="x")
-        big = {"font": ("Segoe UI", 14, "bold"), "width": 9, "height": 1, "relief": "flat", "cursor": "hand2", "bd": 0}
-        self.start_btn = tk.Button(buttons, text="\u25B6  Start", bg=GREEN, fg="#FFFFFF", activebackground="#388E3C",
-                                   command=self.on_start, **big)
-        self.pause_btn = tk.Button(buttons, text="\u275A\u275A  Pause", bg=AMBER, fg="#000000",
-                                   activebackground="#FBC02D", command=self.on_pause, **big)
-        self.stop_btn = tk.Button(buttons, text="\u25A0  Stop", bg=RED, fg="#FFFFFF", activebackground="#D32F2F",
-                                  command=self.on_stop, **big)
+        big = {"width": 132, "height": 44, "font": ("Segoe UI Semibold", 12), "primary": True}
+        self.start_btn = RoundButton(buttons, "\u25B6  Start", self.on_start, colour="#2E7D32", fg="#FFFFFF", **big)
+        self.pause_btn = RoundButton(buttons, "\u275A\u275A  Pause", self.on_pause, colour="#F9A825", fg="#212121", **big)
+        self.stop_btn = RoundButton(buttons, "\u25A0  Stop", self.on_stop, colour="#C62828", fg="#FFFFFF", **big)
         for b in (self.start_btn, self.pause_btn, self.stop_btn):
-            b.pack(side="left", padx=(0, 10), ipady=6)
-        self.mode_btn = tk.Button(buttons, font=("Segoe UI", 11, "bold"), fg="#FFFFFF", relief="flat", cursor="hand2",
-                                  bd=0, width=24, command=self.on_mode)
-        self.mode_btn.pack(side="right", ipady=10)
+            b.pack(side="left", padx=(0, 6))
+
+        mode = tk.Frame(buttons)
+        mode.pack(side="right")
+        self.mode_switch = Switch(mode, self.on_mode, on_colour=LIVE_COLOUR)
+        self.mode_switch.pack(side="right", padx=(10, 0))
+        self.mode_title = tk.Label(mode, font=("Segoe UI Semibold", 11), anchor="e")
+        self.mode_title.pack(anchor="e")
+        self.mode_caption = tk.Label(mode, font=("Segoe UI", 9), fg="#546E7A", anchor="e")
+        self.mode_caption.pack(anchor="e")
+        for w in (self.mode_title, self.mode_caption):
+            w.configure(cursor="hand2")
+            w.bind("<Button-1>", lambda e: self.on_mode())
         self.loading = ttk.Progressbar(tab, mode="indeterminate")
 
         info = ttk.Frame(tab)
@@ -432,8 +640,12 @@ class App:
             self.info[key] = ttk.Label(info, text="", style="Big.TLabel", wraplength=640, justify="left")
             self.info[key].grid(row=row, column=1, sticky="w", pady=2)
 
+    def _build_settings(self, inner: ttk.Notebook):
+        """System > Settings: pairing this till with the relay."""
+        tab = ttk.Frame(inner, padding=10)
+        inner.add(tab, text=" Settings ")
         relay = ttk.LabelFrame(tab, text=" Relay: the slip reader's connection ", padding=10)
-        relay.pack(fill="x", pady=(8, 0))
+        relay.pack(fill="x")
         self.relay_status = ttk.Label(relay, text="", style="Big.TLabel", wraplength=780, justify="left")
         self.relay_status.grid(row=0, column=0, columnspan=4, sticky="w")
         self.relay_form = ttk.Frame(relay)
@@ -447,13 +659,12 @@ class App:
         ttk.Entry(self.relay_form, textvariable=self.till_name, width=22).grid(row=0, column=3, padx=6, sticky="w")
         self.relay_code = tk.Label(relay, text="", font=("Consolas", 26, "bold"), fg="#0D47A1")
         self.relay_code.grid(row=2, column=0, columnspan=4, sticky="w")
-        self.pair_btn = ttk.Button(relay, text="Pair this till", command=self.on_pair)
-        self.pair_btn.grid(row=3, column=0, sticky="w", pady=(8, 0))
-        self.unpair_btn = ttk.Button(relay, text="Unpair", command=self.on_unpair)
-        self.unpair_btn.grid(row=3, column=1, sticky="w", pady=(8, 0), padx=6)
-
-        ttk.Label(tab, text="Keys on the till:   `  watcher on / off     Shift + `  test / live     Esc  stop now",
-                  foreground="#546E7A").pack(side="bottom", anchor="w")
+        actions = ttk.Frame(relay)
+        actions.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.pair_btn = RoundButton(actions, "Pair this till", self.on_pair, colour="#0D47A1", fg="#FFFFFF", primary=True)
+        self.pair_btn.pack(side="left")
+        self.unpair_btn = RoundButton(actions, "Unpair", self.on_unpair)
+        self.unpair_btn.pack(side="left", padx=6)
 
     def _tree(self, parent, columns: list[tuple[str, str, int]], height: int = 10) -> ttk.Treeview:
         frame = ttk.Frame(parent)
@@ -487,7 +698,7 @@ class App:
                         command=self.show_log).pack(side="left", padx=10)
         self.log_name = ttk.Label(top, text="", foreground="#546E7A")
         self.log_name.pack(side="left", padx=10)
-        ttk.Button(top, text="Open logs folder", command=lambda: self._open(app_paths.log_dir())).pack(side="right")
+        RoundButton(top, "Open logs folder", lambda: self._open(app_paths.log_dir())).pack(side="right")
         body = ttk.Frame(log_tab)
         body.pack(fill="both", expand=True, pady=(6, 0))
         self.log_text = tk.Text(body, wrap="none", font=("Consolas", 9), state="disabled", bg="#FAFAFA")
@@ -530,9 +741,11 @@ class App:
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
         self.staff_image = ttk.Label(right, text="", anchor="center")
         self.staff_image.pack(fill="both", expand=True)
-        self.open_image_btn = ttk.Button(right, text="Open full size", command=self.open_staff_image)
+        self.open_image_btn = RoundButton(right, "Open full size", self.open_staff_image)
         self.open_image_btn.pack(anchor="e", pady=(4, 0))
         self.staff_tree.bind("<<TreeviewSelect>>", lambda e: self.show_staff())
+
+        self._build_settings(inner)
 
     def _build_data(self):
         tab = ttk.Frame(self.tabs, padding=8)
@@ -542,7 +755,7 @@ class App:
         ttk.Label(top, text="Racecard files today", style="Head.TLabel").pack(side="left")
         self.files_status = ttk.Label(top, text="", style="Big.TLabel")
         self.files_status.pack(side="left", padx=12)
-        ttk.Button(top, text="Refresh", command=lambda: self.refresh_data(force=True)).pack(side="right")
+        RoundButton(top, "Refresh", lambda: self.refresh_data(force=True)).pack(side="right")
         self.files_tree = self._tree(tab, [("file", "File", 140), ("sport", "Sport", 100), ("races", "Races", 60),
                                            ("updated", "Betty last wrote it", 160), ("size", "Size", 300)], height=4)
         self.files_tree.frame.pack(fill="x", pady=(6, 10))
@@ -795,10 +1008,13 @@ class App:
         self.start_btn.configure(state="normal" if self.state in ("stopped", "ready") else "disabled")
         self.pause_btn.configure(state="normal" if alive and self.state == "ready" else "disabled")
         self.stop_btn.configure(state="normal" if alive and self.state != "stopping" else "disabled")
+        self.mode_switch.set(not self.want_test)
         if self.want_test:
-            self.mode_btn.configure(text="TEST: stops before placing", bg=TEST_COLOUR, activebackground=TEST_COLOUR)
+            self.mode_title.configure(text="Test", fg=TEST_COLOUR)
+            self.mode_caption.configure(text="stops before placing")
         else:
-            self.mode_btn.configure(text="LIVE: places bets", bg=LIVE_COLOUR, activebackground=LIVE_COLOUR)
+            self.mode_title.configure(text="Live", fg=LIVE_COLOUR)
+            self.mode_caption.configure(text="places bets")
 
     # --- The ready light and the Gemini check ---
 
@@ -831,14 +1047,14 @@ class App:
             reasons = self.not_ready_reasons()
         except Exception as e:
             reasons = [f"check failed: {e}"]
+        self.ready_detail = "Not ready to automate:\n- " + "\n- ".join(reasons) if reasons else ""
         if reasons:
             self._dot(self.ready_dot, RED)
-            self.ready_text.configure(text="NOT READY: " + reasons[0] + (f"  (+{len(reasons) - 1} more)" if len(reasons) > 1 else ""))
+            self.ready_text.configure(text="Not ready")
         else:
             self._dot(self.ready_dot, GREEN)
             on = self.backend.alive() and self.watcher.get("watcher")
-            self.ready_text.configure(text="AUTOMATING" + (" (TEST MODE)" if self.want_test else " (LIVE)") if on
-                                      else "READY TO AUTOMATE")
+            self.ready_text.configure(text="Running" if on else "Ready")
 
     def check_gemini(self, force: bool = False):
         if not self.gemini_busy:
@@ -1224,7 +1440,7 @@ def gemini_check() -> dict:
         key = os.environ.get(name, "").strip()
         if key:
             return relay_link.check_gemini_key(key)
-    return {"ok": False, "text": "no slip reader set up: pair this till (Controls)"}
+    return {"ok": False, "text": "no slip reader set up: pair this till (System, Settings)"}
 
 
 def _ago(secs: float) -> str:

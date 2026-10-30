@@ -14,7 +14,7 @@ FIRST TIME ON A TILL
    Then double-click BettyCompanion.exe again.
 3. Double-click BettyCompanion.exe. The Betty Companion window opens.
 4. Pair the till with the relay, once (the relay is what reads the slips):
-   - Controls tab: check the Relay address and type a Till name, e.g. "Shop 1 - Till 2", then "Pair this till".
+   - System tab, Settings: check the Relay address and type a Till name, e.g. "Shop 1 - Till 2", then "Pair this till".
    - A 6-digit code appears. On the manager's phone, open the relay's /admin page and approve the same code.
    - Within a few seconds the window says "Paired". Nothing else to type, ever.
 5. Once paired, it finds where Betty keeps its racecards and saves it in betty_paths.json: C:\ on the manager's
@@ -27,8 +27,9 @@ EVERY DAY
 - Double-click BettyCompanion.exe, then Start. The window steps aside so Betty is in front, and the overlay in the
   corner shows what it is doing.
 - Pause: stops at once and touches nothing; Start carries on. Stop: closes the program (and the overlay).
-- The orange button is the mode: LIVE places bets, TEST stops before placing. LIVE is the default.
-- The light at the bottom: green = ready to automate; red says what is missing. The Gemini light shows whether
+- The switch on the right is the mode: on (orange) = LIVE, places bets; off = TEST, stops before placing.
+  LIVE is the default.
+- The light at the bottom: green "Ready" = ready to automate; red "Not ready" (point at it to see what is missing). The Gemini light shows whether
   slips can be read.
 - Keys on the till still work: ` (backtick) watcher on/off, Shift + ` test/live, Esc stop now.
 - A person using the keyboard or mouse pauses it; it carries on by itself after a minute with no activity.

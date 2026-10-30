@@ -45,7 +45,7 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "No slip reader answered: no internet, the relay is down or refused this till, or Gemini is out of quota or "
      "credit. Look at the Gemini light at the bottom of the window.",
      "Enter the wager by hand. If the Gemini light is red, check the internet. If it says the till isn't paired, "
-     "pair it again under Controls."),
+     "pair it again under System, Settings."),
     (r"no bets could be read after",
      "No bets found on the slip",
      "The reader looked at the slip several times and found no bets it could use (blank, unclear or unusual "
@@ -189,7 +189,7 @@ GUIDE: list[tuple[str, str, str, str]] = [
     (r"not paired|pass was revoked",
      "This till isn't paired with the relay",
      "The relay doesn't recognise this till's pass (never paired, or revoked on /admin), so slips can't be read.",
-     "Pair the till again: Controls, then Pair this till."),
+     "Pair the till again: System, Settings, then Pair this till."),
 ]
 
 _COMPILED = [(re.compile(p, re.IGNORECASE), title, meaning, action) for p, title, meaning, action in GUIDE]

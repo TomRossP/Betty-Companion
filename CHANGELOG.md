@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [Unreleased]
+
+### Changed
+- **The window's look** (`launcher.py`). Buttons are rounded with a soft shadow and hover / pressed shades (`RoundButton`, drawn with Pillow so the edges are smooth). The live / test mode is a phone-style switch (`Switch`): on (orange) = Live, off = Test. The status dots are smooth.
+- **Pairing moved to System > Settings**; the Controls tab no longer shows the relay or the "Keys on the till" line (the keys still work). The error guide and `release/README.txt` point to the new place.
+- **The ready light is a dot and one word**: Ready, Running or Not ready; pointing at it lists what is missing.
+
 ## [1.1.2] - 2026-10-30
 
 Fixes from the cashier till's logs of 30 Oct (written on the cashier till, applied and tested here). Not built yet.
