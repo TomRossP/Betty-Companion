@@ -4,11 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
-## [Unreleased]
+## [1.1.3] - 2026-10-30
+
+A new look for the window, the price check box with no price when struck, and times written without a 0.
+
+### Fixed
+- **The price check box with no price when struck** (user's screenshot, 30 Oct: the program backed out of it). That box has only SP Only, Cancel and 'Override with entered price', and ignores Enter. `answer_price_box` presses Enter as before; when the box hasn't closed within `PRICE_BOX_CLOSE_SECS`, it clicks 'Override with entered price', found by its text. Still open: staff, never clicked twice. Error guide: "Betty's price check box wouldn't close".
+- **The price box that opens when a betslip line is clicked for best odds guaranteed** is answered before 'g' (which it swallowed, so the guarantee couldn't be confirmed and the wager went to staff), and again after it.
+- **A written time with a single minute digit is read with a 0 before it** (user, 30 Oct): '17.9' = 17:09, '5.3' = 17:03 (`parse_race_time_to_minutes`). Customers leave out that 0, almost never the last one. Before, the time wasn't read at all.
 
 ### Changed
 - **The window's look** (`launcher.py`). Buttons are rounded with a soft shadow and hover / pressed shades (`RoundButton`, drawn with Pillow so the edges are smooth). The live / test mode is a phone-style switch (`Switch`): on (orange) = Live, off = Test. The status dots are smooth.
 - **Pairing moved to System > Settings**; the Controls tab no longer shows the relay or the "Keys on the till" line (the keys still work). The error guide and `release/README.txt` point to the new place.
+- `RoundButton` answers `cget('state')` / `['text']` like a tk.Button (the launcher tests read them).
 - **The ready light is a dot and one word**: Ready, Running or Not ready; pointing at it lists what is missing.
 
 ## [1.1.2] - 2026-10-30

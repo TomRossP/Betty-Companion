@@ -118,12 +118,14 @@ def parse_race_time_to_minutes(time_str: str) -> tuple[int | None, str | None]:
     """
     Parses various race time formats into total minutes from midnight and a normalized HH:MM string.
     Handles '14:15', '1415', '2.15', '2:15', '215', '1647', '6 00' (a faint dot read as a space), etc.
+    A single minute digit is a dropped 0 before it ('17.9' = 17:09, '5.3' = 17:03): customers leave that 0 out, almost
+    never the last one (user, 30 Oct).
     Converts UK afternoon racing (e.g. 2:15 -> 14:15).
     """
     if not time_str:
         return None, None
     s = time_str.strip()
-    m = re.search(r'(\d{1,2})[:.\- ](\d{2})', s)
+    m = re.search(r'(\d{1,2})[:.\- ](\d{2})', s) or re.search(r'(?<!\d)(\d{1,2})[:.](\d)(?!\d)', s)
     if m:
         h, mn = int(m.group(1)), int(m.group(2))
     else:

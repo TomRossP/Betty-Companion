@@ -148,6 +148,11 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Twice in a row, Betty didn't show what the program expected while it was entering this wager, so it was left "
      "for staff (marked FAO in live mode).",
      CHECK_BY_HAND),
+    (r"price check box stayed open",
+     "Betty's price check box wouldn't close",
+     "Betty asked about the price (\"The price you entered was not correct...\"). Enter didn't close the box, and nor "
+     "did 'Override with entered price' (or that button wasn't there).",
+     "Open the wager in Betty, choose the price by hand, and finish the bet."),
     (r"left unedited part-way",
      "Wager stopped part-way",
      "The watcher was stopped (Esc) or hit a problem while this wager was open, so it was left unedited and not "

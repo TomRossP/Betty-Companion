@@ -461,6 +461,11 @@ class RoundButton(tk.Canvas):
 
     config = configure
 
+    def cget(self, key):
+        return {"text": self.text, "state": self.state}.get(key) or super().cget(key)
+
+    __getitem__ = cget
+
 
 class Switch(tk.Canvas):
     """A phone-style on / off switch. A click calls `command`; set() moves it (with a short slide)."""

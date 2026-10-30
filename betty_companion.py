@@ -1,4 +1,4 @@
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -3547,7 +3547,7 @@ SCREEN_RACE_ENTRY_BROKEN = "RACE_ENTRY_BROKEN"  # Betty glitch: no slip image, "
 SCREEN_RACE_LIST = "RACE_LIST"                # runners at the typed time ("Harl 11:04 | Trap 1. ..."), the cyan panel
 SCREEN_REUSE_PANEL = "REUSE_PANEL"            # earlier selections (right-click on the slip). NEVER click a Master Index one
 MODAL_LATE_SELECTION = "MODAL_LATE_SELECTION"  # red border: "Wager staked N mins after 'off'... 'Void Selection'?" (Yes)
-MODAL_PRICE = "MODAL_PRICE"                    # blue border: "The price you entered was not correct..." (Price when struck)
+MODAL_PRICE = "MODAL_PRICE"                    # blue border: "The price you entered was not correct..." (Price when struck, else Override)
 MODAL_PAYMENT_MISMATCH = "MODAL_PAYMENT_MISMATCH"  # after F12, red: "Payment is not the same as on the original empty bet..."
 MODAL_CONFIRM_STAKE = "MODAL_CONFIRM_STAKE"        # after No on the above, blue: "Please confirm this is the stake tendered"
 SCREEN_BET_AND_STAKE = "BET_AND_STAKE"        # F8 "Choose Bet and Stake" (Place Bet / F12 lives here)
@@ -4775,13 +4775,51 @@ def _type_text(text: str):
         betty_press(ch)
 
 
+PRICE_BOX_CLOSE_SECS = 0.8  # Enter or Override: the price box has this long to close
+PRICE_BOX_FOCUS_SECS = 0.5  # after a betslip line is clicked: how long its price box may take to open
+
+
+def _price_box_shows(open_: bool, timeout: float) -> bool:
+    """Colour only (no OCR): whether the price box is open (`open_`), or closed, within `timeout` seconds."""
+    t0 = time.time()
+    while True:
+        _check_stop()
+        shows = _signals_pass(np.array(pyautogui.screenshot().convert('RGB')), MODAL_SIGNATURES[MODAL_PRICE]['colours'])
+        if shows == open_:
+            return True
+        if time.time() - t0 > timeout:
+            return False
+        time.sleep(0.04)
+
+
+def answer_price_box():
+    """
+    Betty's price check box: Enter takes the price when struck. A box with no price history has no 'Price when
+    struck' button (only SP Only, Cancel and 'Override with entered price') and ignores Enter (user's screenshot 42,
+    30 Oct: the program backed out of it); then 'Override with entered price' is clicked, found by its text. Still
+    open: staff.
+    """
+    print("[*] Price check box: taking the price when struck (Enter).")
+    betty_press('enter')
+    if _price_box_shows(False, PRICE_BOX_CLOSE_SECS):
+        return
+    spot = find_button(pyautogui.screenshot(), "Override", MODAL_BACK_OUT[MODAL_PRICE][1])
+    if not spot:
+        raise WagerForStaff("the price check box stayed open after Enter, and its 'Override with entered price' "
+                            "button wasn't found")
+    print("[*] Price check box: Enter didn't close it (no price when struck): 'Override with entered price'.")
+    betty_click(*spot)
+    if not _price_box_shows(False, PRICE_BOX_CLOSE_SECS):
+        raise WagerForStaff("the price check box stayed open after 'Override with entered price'")
+
+
 def answer_entry_popups(max_rounds: int = 3):
-    """After adding a runner: the price box -> Enter (price when struck); a late selection -> Yes (void processing)."""
+    """After adding a runner: the price box -> price when struck, else Override (answer_price_box); a late selection
+    -> Yes (void processing)."""
     for _ in range(max_rounds):
         screen = wait_for_screen(set(MODAL_SIGNATURES), timeout=0.4)
         if screen == MODAL_PRICE:
-            print("[*] Price check box: taking the price when struck (Enter).")
-            betty_press('enter')
+            answer_price_box()
         elif screen == MODAL_LATE_SELECTION:
             spot = find_button(pyautogui.screenshot(), "Yes", MODAL_BACK_OUT[MODAL_LATE_SELECTION][1])
             if not spot:
@@ -5266,13 +5304,16 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
         if lines[i]['guaranteed'] or lines[i]['price'].upper() in NOT_RUNNING:
             continue  # a non-runner, withdrawn or void selection is never guaranteed
         betty_click(left + 60, lines[i]['y'])  # focus this selection (its "1. Meet 1:32" text, far from Remove)
+        # Focusing a selection opens its price box again (user, 30 Oct): answered before 'g', which the box swallows
+        if _price_box_shows(True, PRICE_BOX_FOCUS_SECS):
+            answer_price_box()
         betty_press('g')
         answered, t0 = False, time.time()
         while time.time() - t0 < 2.0:
             _check_stop()
             arr = np.array(pyautogui.screenshot().convert('RGB'))
             if not answered and _signals_pass(arr, price_box):  # before the purple check: both can show at once
-                betty_press('enter')  # price box: Enter = price when struck
+                answer_price_box()
                 answered = True
             elif _line_guaranteed(arr, left, i):
                 print(f"[+] Best odds guaranteed: {horses[i].get('name')} ({time.time() - t0:.2f}s).")
