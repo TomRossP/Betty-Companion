@@ -378,6 +378,11 @@ def calculate_bet_cost_pence(bet: dict) -> int:
         m_mult = re.search(r'\b(\d+)\s*x\b', combined_desc)
         if m_mult:
             mult_lines = int(m_mult.group(1))
+            # A bet of several lines (patent 7, yankee 11 ...): the multiplier counts bets ('1x 50p patent' = 7 lines,
+            # 9.2459179, 31 Oct, costed 50p), unless it is already whole bets' lines ('7x 50p patent', '22x yankee')
+            per_bet = UK_BETTING_GLOSSARY.get(b_type) or LINES_PER_BET_TYPE.get(b_type) or 1
+            if per_bet > 1 and mult_lines % per_bet:
+                mult_lines *= per_bet
             cost = unit_stake * mult_lines * ew_mult
 
     # 3. Dynamic combination math based on number of horses.

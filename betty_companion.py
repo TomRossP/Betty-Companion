@@ -1,4 +1,4 @@
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -190,10 +190,11 @@ from rules_engine import (
     calculate_bet_cost_pence,
     race_time_options,
     selection_names,
+    _without_names,
 )
 
 # Betty local racecard feeds (C:\Events)
-from betty_feed import BettyFeedCard, BettyOffTimes, DOMESTIC_COUNTRIES
+from betty_feed import BettyFeedCard, BettyOffTimes, DOMESTIC_COUNTRIES, DOG_SPORTS
 
 # Centralized Meetings Directory Manager (Virtual, Greyhound, International & Aliases)
 from meetings_manager import meetings_manager
@@ -603,9 +604,9 @@ def format_time_for_betty(time_str: str, digits_only: bool = False) -> str:
 # Pre-flight checks every selection against the card Betty itself holds (C:\Events SIS / TRP / Tote feeds),
 # so runner names, race times, meetings and saddle-cloth numbers are exactly what Betty will show.
 racecard_manager = BettyFeedCard(category_resolver=lambda m: meetings_manager.resolve_meeting(m)[0])
-# Greyhounds: every feed Betty labels "DOG" (today SIS DGB00, TRP Dogs BFTV5, Australian BFTST), found as Betty adds
-# them. BETTY_DOG_FEEDS (e.g. "DGB00,BFTV5") fixes the list instead. Its tracks count as greyhound tracks by name.
-greyhound_card = BettyFeedCard(feeds=tuple(_env_list("BETTY_DOG_FEEDS", "")) or None, sports=("DOG",), greyhounds=True)
+# Greyhounds: every feed Betty labels "DOG" or "ADOGS" (today SIS DGB00, TRP Dogs BFTV5, Australian BFTST, the virtual
+# dogs BFBI2), found as Betty adds them. BETTY_DOG_FEEDS (e.g. "DGB00,BFTV5") fixes the list instead. Its tracks count as greyhound tracks by name.
+greyhound_card = BettyFeedCard(feeds=tuple(_env_list("BETTY_DOG_FEEDS", "")) or None, sports=DOG_SPORTS, greyhounds=True)
 meetings_manager.live_greyhound_source = greyhound_card.get_meetings
 # When each race actually went off: Betty's off slips (C:\DBF\transact.DBF, BETTY_DBF_DIR), marked on the runners
 race_offs = BettyOffTimes()
@@ -1344,6 +1345,25 @@ def infer_selection_count_from_multiplier(bet_type: str, multiplier: int) -> int
     return None
 
 
+FOLD_BET_TYPES = ('', 'double', 'treble', 'accumulator')  # the fold a multiplier may decide; any other type it can't
+
+
+def written_bet_type(text: str, names=()) -> str:
+    """
+    The bet type the customer's own words name, '' when they name none: '3x 50p WIN SINGLES' -> 'single', '1x 50p WIN
+    PATENT' -> 'patent'. 'win' alone names no type here (it is the win part of '1x £1 win'), so a single needs the word.
+    """
+    t = normalize_bet_type('', text, names)
+    if t == 'single' and not re.search(r'\bsingl', _without_names(str(text).lower(), names)):
+        return ''
+    return t
+
+
+def names_its_own_type(written_type: str) -> bool:
+    """A written type no multiplier may change: anything but a plain fold (single, patent, lucky 31, forecast ...)."""
+    return written_type not in FOLD_BET_TYPES and not written_type.startswith('perm ')
+
+
 COMPOUND_PART_WORDS = re.compile(r'\b(?:(doub\w*|dousl\w*|dubs\w*)|(treb\w*)|(acc\w*)|(singl\w*))\b', re.I)
 # Words after a number that make it a count of bets or a fold size ('2 doubles', '4 fold'), never the stake
 BET_COUNT_WORDS = re.compile(r'\s*(?:doub\w*|dousl\w*|dubs\w*|dbls?|treb\w*|acc\w*|singl\w*|\w*folds?|bets?|lines?|'
@@ -1783,6 +1803,15 @@ def reconcile_bet_scoping_qualifiers(
         # Forecasts / tricasts (incl. forecast doubles) have fixed line counts: never re-fold them.
         norm_now = normalize_bet_type(str(bet.get('bet_type', '')), combined_text, selection_names(bet))
         is_fc_or_tri = 'forecast' in norm_now or 'tricast' in norm_now
+        # A type the customer named (singles, patent, lucky 31 ...) is the bet: the multiplier only counts its bets.
+        # 9.2459179 (31 Oct): '3x 50p WIN SINGLES' + '1x 50p WIN PATENT' on 3 runners were re-folded from the
+        # multipliers alone into 3 doubles + a treble (£2.00 against £5.00 paid), on all three scans.
+        written_type = written_bet_type(combined_text, selection_names(bet))
+        keeps_written_type = names_its_own_type(written_type)
+        if keeps_written_type and normalize_bet_type(str(bet.get('bet_type', ''))) != written_type:
+            print(f"[+] Bet #{b_idx + 1} '{desc}': the written '{written_type}' kept (read as '{bet.get('bet_type')}').")
+            bet['bet_type'] = written_type
+            bet['cost_pence'] = calculate_bet_cost_pence(bet)
         # The bet type the customer actually WROTE always outranks a fold guessed from the multiplier.
         # e.g. '4x 50 WIN x DOUBLES' on 2+2 same-race runners is 4 cross doubles, NOT 4C3 = 4 trebles.
         has_doub_word = bool(re.search(r'\b(?:doub\w*|dousl|dubs)\b', combined_text, re.I))
@@ -1794,7 +1823,7 @@ def reconcile_bet_scoping_qualifiers(
         elif has_treb_word and not (has_doub_word or has_acc_word):
             written_fold = 3
 
-        if is_fc_or_tri:
+        if is_fc_or_tri or keeps_written_type:
             pass
         elif n_horses == 3:
             # On 3 selections:
@@ -1807,7 +1836,8 @@ def reconcile_bet_scoping_qualifiers(
             has_doub_hint = bool(re.search(r'\b(?:doub|double|dousl|dubs)\b', combined_text, re.I))
             has_3x_mult = bool(mult_num == 3 or re.search(r'\b3\s*x\b', combined_text, re.I) or re.search(r'\b3\s*doubles\b', combined_text, re.I))
 
-            if (mult_num == 1 or has_treb_hint) and not (has_doub_hint and has_3x_mult):
+            # '1x' makes a treble only when no double is written: '1x 50p double' is one double, not a treble
+            if (has_treb_hint or (mult_num == 1 and written_fold != 2)) and not (has_doub_hint and has_3x_mult):
                 print(f"[+] Reconciled Bet #{b_idx + 1} '{desc}': 1x / Treble on 3 selections is a Treble.")
                 bet['bet_type'] = 'treble'
                 bet['cost_pence'] = calculate_bet_cost_pence(bet)
@@ -2361,6 +2391,54 @@ def pre_process_slip_image(raw_img):
     return sharp
 
 
+REFIT_MAX_COMBINATIONS = 729  # 3 readings on each of 6 bets: more and the money check sends the slip to staff
+
+
+def bet_type_readings(bet: dict) -> list[str]:
+    """The bet types one bet line can be read as: as reconciled, as the reader typed it, as its words name it (the
+    fold its multiplier implies is already the reconciled one). Each is the type as costed and entered, words and all
+    (normalize_bet_type over the description), so a type the customer wrote leaves one reading. Reconciled first."""
+    text = f"{bet.get('description', '')} {bet.get('raw_text', '')}"
+    names = selection_names(bet)
+    out: list[str] = []
+    for t in (bet.get('bet_type'), bet.get('_read_type'), written_bet_type(text, names)):
+        norm = normalize_bet_type(str(t or ''), str(bet.get('description', '')), names) if t else ''
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
+def refit_bet_types_to_money(bets_list: list[dict], target_pence: int) -> bool:
+    """
+    When the bets don't cost the money: every combination of each bet's readings (bet_type_readings) is costed, and
+    the bets are changed only when exactly ONE combination costs exactly `target_pence` (two that fit is a guess, and
+    the money check then sends it to staff). True when the bets were changed.
+    """
+    options = [bet_type_readings(b) for b in bets_list]
+    if not bets_list or all(len(o) <= 1 for o in options) or math.prod(len(o) for o in options) > REFIT_MAX_COMBINATIONS:
+        return False
+    costs = []
+    for bet, types in zip(bets_list, options):
+        by_type = {}
+        for t in types:
+            trial = dict(bet, bet_type=t)
+            by_type[t] = calculate_bet_cost_pence(trial)
+        costs.append(by_type)
+    fits = [combo for combo in itertools.product(*options)
+            if sum(c[t] for c, t in zip(costs, combo)) == target_pence]
+    if len(fits) != 1:
+        if len(fits) > 1:
+            print(f"[-] Bet type readings: {len(fits)} different readings cost £{target_pence / 100:.2f}; none chosen.")
+        return False
+    for i, (bet, t) in enumerate(zip(bets_list, fits[0])):
+        if normalize_bet_type(str(bet.get('bet_type', ''))) != t:
+            print(f"[+] Bet type readings: Bet #{i + 1} '{bet.get('description')}' read as {t} "
+                  f"(not {bet.get('bet_type')}): the only reading that costs £{target_pence / 100:.2f}.")
+            bet['bet_type'] = t
+        bet['cost_pence'] = calculate_bet_cost_pence(bet)
+    return True
+
+
 def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | None = None):
     """
     Shared post-processing for the vision model's slip reading: line backfill, phantom
@@ -2496,6 +2574,9 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
         written_total_pence = verified_written_pence
         written_display = verified_display or written_display
 
+    for bet in bets_list:  # the reader's own type, before the reconcilers: one of the readings the money may pick
+        bet['_read_type'] = bet.get('bet_type')
+
     # Positional Scoping Reconciler (enforces 'LAST 2', 'LAST 3', 'ABOVE N' qualifiers)
     bets_list = reconcile_bet_scoping_qualifiers(bets_list, raw_selections, line_transcription)
 
@@ -2572,6 +2653,11 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
         elif flips:
             print(f"[-] Total Stake Reconciliation Healer: bets {', '.join(f'#{i + 1}' for i in flips)} could each be the "
                   f"misread each way; none changed.")
+
+    # 3. Bet type readings: the money picks between the ways each bet line can be read, before any rescan (a rescan
+    # reads the same words again; it can't fix how they were understood)
+    if target_pence is not None and calc_total_pence != target_pence and refit_bet_types_to_money(bets_list, target_pence):
+        calc_total_pence = sum(int(b.get('cost_pence') or 0) for b in bets_list)
 
 
     if written_total_pence is not None:
@@ -3237,6 +3323,7 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
             'void': bool(runner.get('void')),
             'favourite': bool(runner.get('favourite')),
             'feed': runner.get('feed'),
+            'dogs': bool(runner.get('dogs')),
         }
 
     for (h_time, h_name), sample_horse in unique_selections.items():
@@ -3376,6 +3463,7 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
             'category': sample_horse.get('category'),
             'favourite': bool(sample_horse.get('favourite')),
             'feed': sample_horse.get('feed'),
+            'dogs': bool(sample_horse.get('dogs')),
         }
 
     # 3. Synchronize all resolved runner details back into the slip data, under the key each runner was collected by
@@ -3411,6 +3499,8 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
                     horse['favourite'], horse['number'], horse['price'] = True, None, 'SP'  # through its folder
                 if res.get('feed'):
                     horse['feed'] = res['feed']
+                if res.get('dogs'):
+                    horse['dogs'] = True
                 if res.get('alternatives'):
                     horse['_alternatives'] = res['alternatives']
                 res_p = str(res.get('price', '')).strip()
@@ -3466,6 +3556,14 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
 MAX_SCAN_ATTEMPTS = 3
 
 
+def bets_reading_signature(bets_list: list[dict]) -> tuple:
+    """What decides the bets' cost, per bet: its words (letters and digits only: '3x 50p' and '3 x 50P' are one
+    reading), stake, each way, type, runner count and cost. Two scans with the same signature read the same bets."""
+    return tuple((_letters(f"{b.get('description', '')} {b.get('raw_text', '')}"), b.get('stake_pence'),
+                  bool(b.get('each_way')), normalize_bet_type(str(b.get('bet_type', ''))), len(b.get('horses', [])),
+                  b.get('cost_pence')) for b in bets_list or [])
+
+
 def scan_and_reconcile(api_key, payment_pence: int | None = None, struck_time: str | None = None) -> dict:
     """
     Reads the slip on the race-entry screen and rescans (up to MAX_SCAN_ATTEMPTS, with a targeted hint) until the bets
@@ -3476,7 +3574,7 @@ def scan_and_reconcile(api_key, payment_pence: int | None = None, struck_time: s
     """
     out: dict[str, Any] = {'ok': False, 'reason': '', 'slip_data': None, 'raw_selections': None, 'img_str': None,
                            'written_total_pence': None, 'calc_total_pence': None}
-    hint = None
+    hint, last_reading = None, None
     for attempt in range(1, MAX_SCAN_ATTEMPTS + 1):
         if abort_event.is_set():
             return out
@@ -3516,6 +3614,15 @@ def scan_and_reconcile(api_key, payment_pence: int | None = None, struck_time: s
         if diff == 0:
             out['ok'] = True
             return out
+        # The same bets read again: the words are right and how they're costed isn't, which no rescan changes
+        # (9.2459179, 31 Oct: three paid scans of identical lines)
+        reading = bets_reading_signature(slip_data)
+        if reading == last_reading:
+            print("[!] The rescan read the same bets as the scan before it: rescanning again won't change the money.")
+            out['reason'] = (f"Money mismatch: the bets cost £{calc / 100:.2f} but £{target / 100:.2f} was "
+                             f"{what.split(' (')[0]}; two scans read the same bets.")
+            return out
+        last_reading = reading
         if attempt < MAX_SCAN_ATTEMPTS:
             hint = (f"ATTENTION: In the previous scan, the bets totaled £{calc / 100:.2f} ({calc}p), but the customer "
                     f"{'paid' if payment_pence is not None else 'wrote a total of'} £{target / 100:.2f} ({target}p) "
@@ -4671,7 +4778,8 @@ def race_list_rows(img: Any) -> list[dict]:
             continue
         out.append({'row': r, 'label': cap.group(0).lower(), 'time': f"{int(m_time.group(1))}:{m_time.group(2)}",
                     'trap': bool(m_name.group(1)), 'number': int(m_name.group(2) or m_name.group(3)),
-                    'name': m_name.group(4).strip(), 'y': RACE_LIST_ROW[1] + r * RACE_LIST_PITCH + RACE_LIST_ROW[3] // 2})
+                    'name': m_name.group(4).strip(), 'y': RACE_LIST_ROW[1] + r * RACE_LIST_PITCH + RACE_LIST_ROW[3] // 2,
+                    'virtual': bool(re.search(r'\(\s*v\s*\)', labels[r], re.I))})  # 'Mill 12:50(v)'
     return out
 
 
@@ -4684,7 +4792,7 @@ def find_runner_row(img: Any, horse: dict, candidates: list[str]) -> dict | None
     (horse / dog), number and name all fit; None otherwise.
     """
     meeting, number = horse.get('meeting', ''), horse.get('number')
-    want_time, want_dog = clock_12h(str(horse.get('time', ''))), horse.get('category') == 'greyhound'
+    want_time, want_dog = clock_12h(str(horse.get('time', ''))), is_dog_race(horse)
     if not meeting or not number or not want_time:
         return None
     for row in race_list_rows(img):
@@ -4740,6 +4848,121 @@ def top_meeting_in_race_list(img: Any, candidates: list[str], prefer: str | None
             votes[best] = votes.get(best, 0) + 1
     return max(votes, key=lambda k: votes[k]) if votes else None
 
+
+# --- The runner list read by its contents: which race heads it, from the whole label column, the runners' cloth
+# numbers and names, horses or dogs, and the '(v)' of a virtual race. The label alone wasn't enough on 31 Oct: the
+# top label read 'wa' / 'bait' row by row where the column read 'mill' on all 9 rows (9.2459256, Millbank Bridge
+# 12:50 virtuals), and 'East' read perfectly but was on no card (9.2459257, the virtual dogs' feed wasn't read).
+
+def _feed_races_at(hhmm: str) -> dict[tuple, dict[int, str]]:
+    """Every race on Betty's cards at this time and 12 hours from it: {(meeting, time, dogs): {cloth number: name}}."""
+    times = _times_12h_apart(hhmm)
+    races: dict[tuple, dict[int, str]] = {}
+    for r in racecard_manager.get_runners() + greyhound_card.get_runners():
+        if r.get('time_str') in times and r.get('number'):
+            races.setdefault((r['meeting'], r['time_str'], is_dog_race(r)), {})[int(r['number'])] = r['name']
+    return races
+
+
+def _runners_of_race(rows: list[dict], race: dict[int, str]) -> int:
+    """How many runner-list rows are the race's runners: its cloth number, and its name as far as Betty shows it."""
+    n = 0
+    for row in rows:
+        name, shown = race.get(row['number']), _letters(row['name'])
+        if name and len(shown) >= 3 and name_similarity(shown, _letters(name)[:len(shown)]) >= 0.75:
+            n += 1
+    return n
+
+
+def runner_list_races(rows: list[dict]) -> list[list[dict]]:
+    """The runner list's rows cut into races, top first. A race starts where the cloth numbers start again, the label
+    changes by 2+ letters or the rows turn from horses to dogs (one misread letter doesn't start a race)."""
+    races: list[list[dict]] = []
+    for row in rows:
+        last = races[-1][-1] if races else None
+        if (last and row['number'] > last['number'] and row['trap'] == last['trap']
+                and _letters_off(row['label'], last['label']) <= 1):
+            races[-1].append(row)
+        else:
+            races.append([row])
+    return races
+
+
+def _common(values: list):
+    """The value most of a race's rows read, when 2+ rows read it; None otherwise."""
+    if not values:
+        return None
+    best = max(set(values), key=values.count)
+    return best if values.count(best) >= 2 else None
+
+
+def _race_is_wanted(block: list[dict], meeting: str, candidates: list[str], races: dict, want_dogs: bool,
+                    want_virtual: bool) -> tuple[bool | None, tuple | None]:
+    """
+    Whether one race of the runner list is the wanted one, and the card race its runners are (None if unknown).
+    True needs positive evidence: its runners are the wanted race's, or its label is the wanted meeting's. False needs
+    positive evidence too: its runners are another race's, its label is 2+ letters off, or it is the other kind
+    (dogs / horses) or virtual when the wanted race isn't. The runners and the label disagreeing is None.
+    """
+    fits = sorted(((_runners_of_race(block, race), key) for key, race in races.items()), reverse=True)
+    card_race = (fits[0][1] if fits and fits[0][0] >= 2 and (len(fits) == 1 or fits[0][0] > fits[1][0]) else None)
+    by_runners = None if card_race is None else card_race[0] == meeting
+    label = _common([r['label'] for r in block])
+    by_label = None
+    if label:
+        if nearest_meeting_label(label, candidates, prefer=meeting) == meeting:
+            by_label = True
+        elif _letters_off(label, betty_meeting_abbrev(meeting)) >= 2:
+            by_label = False
+    if by_runners is not None and by_label is not None and by_runners != by_label:
+        return None, card_race
+    if by_runners or by_label:
+        return True, card_race
+    if by_runners is False or by_label is False:
+        return False, card_race
+    if _common([r['trap'] for r in block]) not in (None, want_dogs):
+        return False, card_race
+    if not want_virtual and _common([r['virtual'] for r in block]):
+        return False, card_race
+    return None, card_race
+
+
+def runner_list_top_by_content(img: Any, meeting: str, hhmm: str, candidates: list[str], want_dogs: bool,
+                               want_virtual: bool = False) -> str | None:
+    """
+    The race heading Betty's runner list, read by its contents: `meeting` when it is the wanted race (or '<meeting>
+    dogs' / '<meeting> horses' when it is the wanted label but the other kind), another meeting's name or a label off
+    the card when it positively isn't, None when the rows can't say. Any race lower down that is the wanted one also
+    says the top isn't. Never guesses the wanted race is on top: 'right' past it is what 9.2458229 lost.
+    """
+    rows = [r for r in race_list_rows(img) if r['time'] == clock_12h(hhmm)]
+    if not rows or rows[0]['row'] > 1:  # the first rows unread: the top race isn't known
+        return None
+    blocks = runner_list_races(rows)
+    races = _feed_races_at(hhmm)
+    top, card_race = _race_is_wanted(blocks[0], meeting, candidates, races, want_dogs, want_virtual)
+    if top is None and any(_race_is_wanted(b, meeting, candidates, races, want_dogs, want_virtual)[0]
+                           for b in blocks[1:]):
+        top = False
+    if top is None:
+        return None
+    kind = _common([r['trap'] for r in blocks[0]])
+    if top:
+        return meeting if kind in (None, want_dogs) else f"{meeting} {'dogs' if kind else 'horses'}"
+    if card_race:
+        return card_race[0]
+    label = _common([r['label'] for r in blocks[0]])
+    named = label and nearest_meeting_label(label, candidates)
+    return named or (f"'{label.title()}' (not on Betty's card)" if label else "another race")
+
+
+def _top_reads_agree(by_label: str | None, by_rows: str | None, meeting: str) -> str | None:
+    """The two reads of the top race together: either alone, or both when they agree on whether it is `meeting`."""
+    if by_label is None or by_rows is None:
+        return by_rows or by_label
+    if (by_label == meeting) != (by_rows in (meeting, f"{meeting} dogs", f"{meeting} horses")):
+        return None  # one says it's the wanted race and the other that it isn't: read again
+    return by_rows
 
 def _times_12h_apart(time_hhmm: str) -> set[str]:
     """The time and the time 12 hours from it: Betty's runner list is on a 12-hour clock."""
@@ -4957,6 +5180,12 @@ def enter_favourite(horse: dict, already_on_slip: int):
     print(f"[+] Betslip line {got['n']}: {got['meeting']} {got['time']} {got['name']} {got['price']} (checked)")
 
 
+def is_dog_race(horse: dict) -> bool:
+    """A greyhound race on Betty's runner list (rows 'Trap 1. ..'): a real dog race, or virtual dogs (Eastgreen),
+    whose category is 'virtual' like the virtual horses'."""
+    return horse.get('category') == 'greyhound' or bool(horse.get('dogs'))
+
+
 def same_race_time(a: dict, b: dict) -> bool:
     """Whether two selections are on one runner list of Betty's: the same time on its 12-hour clock (typing 6:58 lists
     the 06:58 virtuals beside the 18:58 races). The favourite goes through the folders, never the list."""
@@ -4972,15 +5201,17 @@ def same_race(a: dict, b: dict) -> bool:
     if a.get('favourite') or b.get('favourite'):
         return False
     def race(h: dict) -> tuple:
-        return str(h.get('meeting') or ''), str(h.get('time') or ''), h.get('category') == 'greyhound'
+        return str(h.get('meeting') or ''), str(h.get('time') or ''), is_dog_race(h)
     return race(a) == race(b)
 
 
 def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: bool, both_kinds: bool,
-                     reread_secs: float = MEETING_REREAD_SECS) -> str | None:
+                     reread_secs: float = MEETING_REREAD_SECS, want_virtual: bool = False) -> str | None:
     """
     The meeting at the top of Betty's runner list: `meeting` only when the list is also the selection's kind (horses
-    or dogs), otherwise what was read ('Doncaster dogs', another meeting, None = unread after `reread_secs`).
+    or dogs), otherwise what was read ('Doncaster dogs', another meeting, a label off the card, None = unread after
+    `reread_secs`). Read twice over: its label row by row, and the whole list by its contents
+    (runner_list_top_by_content); when both say, they must agree.
     """
     # An unread top meeting is read again before 'right': read once mid-redraw, it was pressed past Dundalk 19:15
     # to the end of the list (9.2448555, 23 Oct)
@@ -4988,7 +5219,9 @@ def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: 
     while True:
         _check_stop()
         shot = pyautogui.screenshot()
-        top = top_meeting_in_race_list(shot, candidates, prefer=meeting)
+        top = _top_reads_agree(top_meeting_in_race_list(shot, candidates, prefer=meeting),
+                               runner_list_top_by_content(shot, meeting, hhmm, candidates, want_dogs, want_virtual),
+                               meeting)
         if top or time.time() - t_read > reread_secs:
             break
         time.sleep(0.1)
@@ -5073,14 +5306,14 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
     refresh_watcher_hud(f"Entering selection {already_on_slip + 1}: {label}...")
     rivals = _meetings_at(hhmm) or [meeting]
     candidates = rivals if meeting in rivals else rivals + [meeting]
-    want_dogs = horse.get('category') == 'greyhound'
+    want_dogs, want_virtual = is_dog_race(horse), horse.get('category') == 'virtual'
     both_kinds = _label_has_horses_and_dogs(meeting, hhmm)
 
     img = pyautogui.screenshot()
     screen = detect_screen(img)
     row, top = None, None  # the selection's row lower down the list, clicked instead of typing its number
     if (after_same_race and screen == SCREEN_RACE_LIST
-            and _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds) == meeting):
+            and _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds, want_virtual=want_virtual) == meeting):
         print(f"[*] {meeting} {clock_12h(hhmm)} is still showing: no time typed.")
     else:
         reuse = after_same_time and screen == SCREEN_RACE_LIST
@@ -5096,14 +5329,14 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
                 screen = _type_race_time(img, detect_screen(img), hhmm)
             if screen == SCREEN_RACE_ENTRY_EXHAUSTED:
                 raise WagerForStaff(f"{meeting} {clock_12h(hhmm)} is not in Betty's runner list")
-            top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds)
+            top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds, want_virtual=want_virtual)
             if top is None:
                 # Never 'right' on a list whose top wasn't read (9.2458229, 30 Oct: Newcastle 5:45 was already at the
-                # top, unread while Betty drew it; 'right' then swallowed the runner number and Enter)
-                top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds, reread_secs=NAV_TIMEOUT)
-                if top is None and candidates == [meeting] and not both_kinds:
-                    print(f"[*] Runner list top unread, but only {meeting} races at {clock_12h(hhmm)}: taken as {meeting}.")
-                    top = meeting
+                # top, unread while Betty drew it; 'right' then swallowed the runner number and Enter). Nor is an unread
+                # top taken as the only meeting on the card at the time: the card can be short of a feed (9.2459253,
+                # 31 Oct: taken as Ascot 2:33 with the Eastgreen 2:33 virtual dogs off the card)
+                top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds, reread_secs=NAV_TIMEOUT,
+                                       want_virtual=want_virtual)
                 if top is None:
                     raise WagerForStaff(f"the meeting at the top of Betty's {clock_12h(hhmm)} runner list could not be read")
             if top == meeting:

@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.1.4] - 2026-10-31
+
+Fixes from the cashier till's logs of 31 Oct: three wagers left for staff (9.2459179, 9.2459256, 9.2459257).
+
+### Fixed
+- **A bet type the customer wrote is never re-folded from its multiplier** (9.2459179: '3x 50p WIN SINGLES' and '1x 50p WIN PATENT' on 3 runners became 3 doubles and a treble, £2.00 against £5.00 paid, on all three scans). `written_bet_type` reads the type from the customer's words ('win' alone names none); any type but a plain fold (`names_its_own_type`) is kept and the multiplier only counts its bets. '1x' no longer makes a written double a treble.
+- **'1x' on a bet of several lines is one whole bet** (`calculate_bet_cost_pence`): '1x 50p patent' = 7 lines, £3.50 (it cost 50p); '2x 10p yankee' = 22 lines. A multiplier that is already whole bets' lines ('7x patent') is left as lines.
+- **The virtual dogs are on the card** (9.2459257: 'East 2:18(v)' at the top of the runner list matched no meeting, so it went to staff). The greyhound card reads Betty's ADOGS feed as well as DOG (`DOG_SPORTS`; Eastgreen, Kings Stadium). Virtual dogs carry `dogs` so entry looks for a dog list (`is_dog_race`). A feed that looks like racing but neither card reads is said once in the console.
+- **The top of the runner list is read by its contents as well as its label** (9.2459256: Millbank Bridge 12:50 virtuals read 'wa' / 'bait' row by row; the whole column read 'mill' on 9 rows). `runner_list_top_by_content` cuts the list into races (`runner_list_races`) and decides whether the top one is the wanted race from its runners' cloth numbers and names against the card, its label, horses or dogs, and '(v)'. 'Right' needs positive evidence the top isn't the wanted race (another race's runners, a label 2+ letters off, the other kind, virtual, or the wanted race lower down); a label on no card counts. When the label read and the contents read both answer, they must agree (`_top_reads_agree`).
+
+### Changed
+- **An unread top is no longer taken as the only meeting on the card** (9.2459253: taken as Ascot 2:33 while the Eastgreen 2:33 virtual dogs were missing from the card). It goes to staff, as when another meeting races then.
+- **The money picks between a bet's readings before any rescan** (`refit_bet_types_to_money`): as reconciled, as the reader typed it, as its words name it. Changed only when exactly one combination costs the payment.
+- **A rescan that reads the same bets stops the rescans** (`bets_reading_signature`): the words were right and their cost wrong, which a third paid scan can't change.
+
 ## [1.1.3] - 2026-10-30
 
 A new look for the window, the price check box with no price when struck, and times written without a 0.

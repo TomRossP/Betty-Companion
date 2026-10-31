@@ -43,6 +43,12 @@ RUNNER_NAME_OFF = 12
 # priority order: SIS and TRP carry the meeting names Betty displays, the Tote feed fills any race they lack, then any
 # other feed. Duplicate races across feeds are dropped.
 HORSE_SPORTS = ("HORSE", "AHORSES")
+# Greyhounds likewise: DOG (SIS, TRP) and ADOGS (the virtual dogs, Eastgreen and Kings Stadium on 31 Oct). Without
+# ADOGS the virtual dogs at the top of Betty's 2:18 runner list matched no meeting (9.2459257, 31 Oct)
+DOG_SPORTS = ("DOG", "ADOGS")
+# A sport code that looks like racing but neither card reads is said once in the console, so a new feed shows
+RACING_SPORT = re.compile(r"HORSE|DOG|GREY|RAC", re.I)
+_unread_sports_said: set[str] = set()
 DEFAULT_HORSE_FEEDS = ("HGB00", "BFTRP", "TTHR")
 RECHECK_SECS = 10  # Betty rewrites today's feeds every few seconds: look at the files at most this often
 DOMESTIC_COUNTRIES = {"UK", "IE"}
@@ -233,7 +239,14 @@ class BettyFeedCard:
             paths = [os.path.join(self.events_dir, f) for f in names]
             rank = {feed: i for i, feed in enumerate(DEFAULT_HORSE_FEEDS)}
             paths.sort(key=lambda p: (rank.get(os.path.basename(p)[3:-4], len(rank)), p))
-            self._found = (key, tuple(p for p in paths if feed_sport(p) in self.sports))
+            sports = {p: feed_sport(p) for p in paths}
+            for p, sport in sports.items():
+                if (sport and RACING_SPORT.search(sport) and sport not in HORSE_SPORTS + DOG_SPORTS
+                        and sport not in _unread_sports_said):
+                    _unread_sports_said.add(sport)
+                    print(f"[-] Betty feed: {os.path.basename(p)} is racing ('{sport}') but no card reads it: its "
+                          "meetings won't be known.")
+            self._found = (key, tuple(p for p in paths if sports[p] in self.sports))
         return list(self._found[1])
 
     def _category(self, meeting: str, country: str) -> str:
@@ -287,6 +300,7 @@ class BettyFeedCard:
                             "minutes": race["minutes"], "number": cloth, "category": category,
                             "country": race["country"], "event_id": race["event_id"],
                             "feed": os.path.basename(path)[3:-4],  # e.g. 'HGB00': which Betty folder the race is in
+                            "dogs": self.greyhounds,  # a dog race, virtual dogs too (category 'virtual')
                         })
         self._signature, self._runners = signature, runners
         self._meetings = tuple(sorted({r["meeting"] for r in runners if r["category"] != "virtual"}))
