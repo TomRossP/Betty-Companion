@@ -1,4 +1,4 @@
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -4581,8 +4581,13 @@ def entry_bet_type(bet: dict) -> str | None:
     return t if t in ENTRY_BET_TYPES else None
 
 
-BETSLIP_LINE_TOP, BETSLIP_LINE_PITCH, BETSLIP_LINE_H = 83, 45.33, 18  # 18px tall covers the 12px main text without bleeding into the Jockey subline at y+21
-BETSLIP_MAX_LINES = 8
+# Lines are 45 px apart (user's screenshots of 12 lines, 31 Oct: y = 91, 136 .. 451); 45.33 drifted ~3 px by the
+# 9th line and clipped the tops of lines 11-12 ('SP' read 'oP'). 18px tall covers the 12px main text without bleeding
+# into the Jockey subline at y+21
+BETSLIP_LINE_TOP, BETSLIP_LINE_PITCH, BETSLIP_LINE_H = 83, 45, 18
+# Lines the cream panel holds above the grey one: 9 (83 + 8 x 45.33 + 18 = 464 < 488). It was 8, so the 9th of 17
+# selections was added but never read: "the betslip shows 8 selection(s), expected 9" (9.2459368, 31 Oct)
+BETSLIP_MAX_LINES = int((BETSLIP_BETS_ROWS[0] - BETSLIP_LINE_TOP - BETSLIP_LINE_H) / BETSLIP_LINE_PITCH) + 1
 # The name is lazy and may be empty: '(.+?)?' tried one character first, so a dog line '1. Sund 4:59 11-10 BP' read
 # name '1', price '1-10' (9.2453098, 26 Oct)
 BETSLIP_SELECTION_LINE = re.compile(
@@ -4601,7 +4606,7 @@ def read_betslip_selections(img: Any) -> list[dict]:
     """
     Selection lines on Betty's betslip panel, read one line at a time (the focused line's dotted box confused a
     whole-panel read): [{'n', 'meeting', 'time', 'number', 'name', 'price', 'guaranteed', 'y'}]. 'guaranteed' = the
-    price is purple; 'y' = the line's centre, for clicking it.
+    price is purple; 'y' = the line's centre, for clicking it; 'row' = its place in the panel (0 = top).
     """
     left = betslip_left(img)
     arr = np.array(img.convert('RGB'))
@@ -4627,8 +4632,128 @@ def read_betslip_selections(img: Any) -> list[dict]:
                     'number': num, 'name': name,
                     'price': m.group(7).replace(' ', ''),
                     'guaranteed': _colour_share(arr, (left + 250, top, 160, BETSLIP_LINE_H), GUARANTEED_PURPLE, 30) >= 0.02,
-                    'y': top + BETSLIP_LINE_H // 2})
+                    'y': top + BETSLIP_LINE_H // 2, 'row': i})
     return out
+
+
+# More selections than the panel holds: Betty scrolls it to the newest line and draws a yellow-on-red arrow at its top
+# right (lines above); scrolled to the top, one at its bottom right (lines below). A selection must be on screen to be
+# clicked and guaranteed (user's screenshots, 31 Oct: lines 4-12 under an up arrow, 1-9 over a down arrow).
+BETSLIP_ARROW_ZONES = {'up': (1290, 75, 66, 40), 'down': (1290, 435, 66, 53)}  # x, y, w, h
+BETSLIP_ARROW_MIN_PX = 40         # an arrow is ~125 yellow pixels; nothing else in those corners is yellow
+BETSLIP_SCROLL_CLICKS = 30        # arrow clicks before a line counts as unreachable
+
+
+def betslip_arrow(img: Any, which: str) -> tuple[int, int] | None:
+    """Where Betty's betslip scroll arrow is ('up' / 'down'), its yellow arrow's centre, or None when it isn't drawn."""
+    x, y, w, h = BETSLIP_ARROW_ZONES[which]
+    a = np.array(img.convert('RGB').crop((x, y, x + w, y + h))).astype(int)
+    yellow = (a[:, :, 0] > 200) & (a[:, :, 1] > 180) & (a[:, :, 2] < 80)
+    if yellow.sum() < BETSLIP_ARROW_MIN_PX:
+        return None
+    ys, xs = np.nonzero(yellow)
+    return x + int(xs.mean()), y + int(ys.mean())
+
+
+def _lines_hidden_above(lines: list[dict]) -> bool:
+    """Whether the panel shows only its later lines: it is full and its lines' own numbers run on without a gap from
+    a first above 1 ('4. ..' to '12. ..'). Only a full panel can hide lines, so a lone line read '2.' or a misread
+    number never counts as hidden lines."""
+    ns = [line['n'] for line in lines]
+    return len(lines) >= BETSLIP_MAX_LINES and ns[0] > 1 and ns == list(range(ns[0], ns[0] + len(ns)))
+
+
+def betslip_count(lines: list[dict]) -> int:
+    """How many selections the betslip holds, from the lines showing: those read, or the last line's number ('12.')
+    when the panel shows only its later lines. Betty scrolls to the newest line as each one is added."""
+    return lines[-1]['n'] if _lines_hidden_above(lines) else len(lines)
+
+
+def betslip_lines_by_number(lines: list[dict]) -> dict[int, dict]:
+    """The lines showing, by selection number (1 = the first selection entered): by their place from the top, or by
+    their own numbers when the panel shows only its later lines."""
+    if _lines_hidden_above(lines):
+        return {line['n']: line for line in lines}
+    return {i + 1: line for i, line in enumerate(lines)}
+
+
+def _click_betslip_arrow(img: Any, which: str, first_showing: int | None) -> bool:
+    """Clicks the betslip's `which` arrow and waits (up to NAV_TIMEOUT) for the panel to move: its first line's number
+    to change. False when the arrow isn't drawn."""
+    spot = betslip_arrow(img, which)
+    if not spot:
+        return False
+    betty_click(*spot)
+    t0 = time.time()
+    while time.time() - t0 < NAV_TIMEOUT:
+        _check_stop()
+        shown = betslip_lines_by_number(read_betslip_selections(pyautogui.screenshot()))
+        if shown and min(shown) != first_showing:
+            break
+        time.sleep(0.05)
+    return True
+
+
+def show_betslip_line(n: int) -> list[dict]:
+    """
+    Scrolls Betty's betslip with its arrows until selection line `n` shows, and returns the lines then showing. Where
+    it is comes from the lines' own numbers after every click, so how far one click scrolls doesn't matter.
+    """
+    for _ in range(BETSLIP_SCROLL_CLICKS):
+        _check_stop()
+        img = pyautogui.screenshot()
+        lines = read_betslip_selections(img)
+        shown = betslip_lines_by_number(lines)
+        if n in shown:
+            return lines
+        which = 'up' if shown and n < min(shown) else 'down'
+        if not _click_betslip_arrow(img, which, min(shown) if shown else None):
+            raise WagerForStaff(f"betslip line {n} isn't showing and Betty's {which} arrow on the betslip wasn't found")
+    raise WagerForStaff(f"betslip line {n} couldn't be brought into view with the betslip's arrows")
+
+
+def scroll_betslip_to_end():
+    """The betslip scrolled back down to its last line, as Betty leaves it after each selection is added."""
+    for _ in range(BETSLIP_SCROLL_CLICKS):
+        _check_stop()
+        img = pyautogui.screenshot()
+        shown = betslip_lines_by_number(read_betslip_selections(img))
+        if not _click_betslip_arrow(img, 'down', min(shown) if shown else None):
+            return
+
+
+def read_whole_betslip() -> list[dict]:
+    """
+    Every selection line on the betslip, the first selection first. A panel with no scroll arrow shows them all;
+    otherwise it is scrolled to the top, read on down with the down arrow and left at its last line. The lines of a
+    scrolled panel keep their numbers; their 'y' / 'row' are where they showed when read.
+    """
+    img = pyautogui.screenshot()
+    if not (betslip_arrow(img, 'up') or betslip_arrow(img, 'down')):
+        return read_betslip_selections(img)
+    show_betslip_line(1)
+    seen: dict[int, dict] = {}
+    for _ in range(BETSLIP_SCROLL_CLICKS):
+        _check_stop()
+        img = pyautogui.screenshot()
+        shown = betslip_lines_by_number(read_betslip_selections(img))
+        seen.update(shown)
+        if not _click_betslip_arrow(img, 'down', min(shown) if shown else None):
+            break
+    return [dict(seen[n], n=n) for n in sorted(seen)]
+
+
+def check_new_betslip_line(lines: list[dict], already_on_slip: int, label: str) -> dict:
+    """The betslip line of the selection just added, once the betslip holds exactly one more (counted by the lines'
+    numbers when the panel scrolls). Betty scrolls to the new line; if a full panel isn't showing it and has lines
+    below, it is scrolled to."""
+    want = already_on_slip + 1
+    if betslip_count(lines) < want and len(lines) >= BETSLIP_MAX_LINES and betslip_arrow(pyautogui.screenshot(), 'down'):
+        lines = show_betslip_line(want)
+    on_slip = betslip_count(lines)
+    if on_slip != want:
+        raise WagerForStaff(f"after adding {label} the betslip shows {on_slip} selection(s), expected {want}")
+    return lines[-1]
 
 
 def read_betslip_bets(img: Any) -> dict:
@@ -5170,13 +5295,10 @@ def enter_favourite(horse: dict, already_on_slip: int):
     betty_click(*_box_centre(FOLDER_FAVOURITE_ROW))
     print(f"[*] Added {label} through Betty's folder.")
     answer_entry_popups()
-    lines = _read_new_betslip_line(already_on_slip)
-    if len(lines) != already_on_slip + 1:
-        raise WagerForStaff(f"after adding {label} the betslip shows {len(lines)} selection(s), expected {already_on_slip + 1}")
-    problems = betslip_line_problems(lines[-1], horse)
+    got = check_new_betslip_line(_read_new_betslip_line(already_on_slip), already_on_slip, label)
+    problems = betslip_line_problems(got, horse)
     if problems:
         raise WagerForStaff(f"betslip shows {', '.join(problems)} for {label}")
-    got = lines[-1]
     print(f"[+] Betslip line {got['n']}: {got['meeting']} {got['time']} {got['name']} {got['price']} (checked)")
 
 
@@ -5278,7 +5400,7 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
         arr = np.array(img.convert('RGB'))
         box_open = any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values())
         lines = [] if box_open else read_betslip_selections(img)
-        if len(lines) > already_on_slip or time.time() - t0 > NAV_TIMEOUT:
+        if betslip_count(lines) > already_on_slip or time.time() - t0 > NAV_TIMEOUT:
             return lines
         if box_open:
             answer_entry_popups()
@@ -5371,10 +5493,7 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
         print(f"[*] Added {label} with {'numpad + (price)' if takes_price else 'Enter (SP)'}.")
     answer_entry_popups()
 
-    lines = _read_new_betslip_line(already_on_slip)
-    if len(lines) != already_on_slip + 1:
-        raise WagerForStaff(f"after adding {label} the betslip shows {len(lines)} selection(s), expected {already_on_slip + 1}")
-    got = lines[-1]
+    got = check_new_betslip_line(_read_new_betslip_line(already_on_slip), already_on_slip, label)
     if takes_price and got['price'].upper() == 'SP':  # user's rule: a price taken but none on Betty yet -> staff
         raise WagerForStaff(f"the customer took {horse.get('price')} on {label} but Betty has no price for it yet")
     problems = betslip_line_problems(got, horse)
@@ -5492,10 +5611,12 @@ def betslip_line_problems(got: dict, horse: dict) -> list[str]:
 
 
 def _slip_fault(lines: list[dict], horses: list[dict], struck_clock: str | None) -> str | None:
-    """Why the betslip isn't right before F8 (count, a line, a guarantee), or None when it is."""
-    if len(lines) != len(horses):
-        return f"before F8 the betslip shows {len(lines)} selection(s), expected {len(horses)}"
-    for line, horse in zip(lines, horses):
+    """Why the betslip isn't right before F8 (count, a line, a guarantee), or None when it is. `lines`: the whole
+    betslip (read_whole_betslip), matched to the selections by number."""
+    if betslip_count(lines) != len(horses):
+        return f"before F8 the betslip shows {betslip_count(lines)} selection(s), expected {len(horses)}"
+    for n, line in sorted(betslip_lines_by_number(lines).items()):
+        horse = horses[n - 1]
         problems = betslip_line_problems(line, horse)
         not_running = line['price'].upper() in NOT_RUNNING  # non-runner, withdrawn, void: never guaranteed
         wanted = bog_wanted(horse, struck_clock) and not not_running
@@ -5508,9 +5629,9 @@ def _slip_fault(lines: list[dict], horses: list[dict], struck_clock: str | None)
     return None
 
 
-def _line_guaranteed(arr: Any, left: int, i: int) -> bool:
-    """Colour only (no OCR): is betslip line i's price purple?"""
-    top = int(BETSLIP_LINE_TOP + i * BETSLIP_LINE_PITCH)
+def _line_guaranteed(arr: Any, left: int, row: int) -> bool:
+    """Colour only (no OCR): is the price on the betslip panel's line at `row` (0 = top) purple?"""
+    top = int(BETSLIP_LINE_TOP + row * BETSLIP_LINE_PITCH)
     return _colour_share(arr, (left + 250, top, 160, BETSLIP_LINE_H), GUARANTEED_PURPLE, 30) >= 0.02
 
 
@@ -5528,15 +5649,18 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
         return
     img = pyautogui.screenshot()
     lines = read_betslip_selections(img)
-    if len(lines) != len(horses):
-        raise WagerForStaff(f"the betslip shows {len(lines)} selection(s) before guaranteeing, expected {len(horses)}")
+    if betslip_count(lines) != len(horses):
+        raise WagerForStaff(f"the betslip shows {betslip_count(lines)} selection(s) before guaranteeing, "
+                            f"expected {len(horses)}")
     left = betslip_left(img)
     price_box = MODAL_SIGNATURES[MODAL_PRICE]['colours']
     refresh_watcher_hud(f"Best odds guaranteed: {len(wanted)} selection(s)...")
     for i in wanted:
-        if lines[i]['guaranteed'] or lines[i]['price'].upper() in NOT_RUNNING:
+        # More selections than the panel shows: each is scrolled into view to click it (user, 31 Oct)
+        line = betslip_lines_by_number(show_betslip_line(i + 1))[i + 1]
+        if line['guaranteed'] or line['price'].upper() in NOT_RUNNING:
             continue  # a non-runner, withdrawn or void selection is never guaranteed
-        betty_click(left + 60, lines[i]['y'])  # focus this selection (its "1. Meet 1:32" text, far from Remove)
+        betty_click(left + 60, line['y'])  # focus this selection (its "1. Meet 1:32" text, far from Remove)
         # Focusing a selection opens its price box again (user, 30 Oct): answered before 'g', which the box swallows
         if _price_box_shows(True, PRICE_BOX_FOCUS_SECS):
             answer_price_box()
@@ -5548,18 +5672,19 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
             if not answered and _signals_pass(arr, price_box):  # before the purple check: both can show at once
                 answer_price_box()
                 answered = True
-            elif _line_guaranteed(arr, left, i):
+            elif _line_guaranteed(arr, left, line['row']):
                 print(f"[+] Best odds guaranteed: {horses[i].get('name')} ({time.time() - t0:.2f}s).")
                 break
             time.sleep(0.02)
         else:
             answer_entry_popups()  # anything else in the way (e.g. late selection), answered by its label
-            if not _line_guaranteed(np.array(pyautogui.screenshot().convert('RGB')), left, i):
+            if not _line_guaranteed(np.array(pyautogui.screenshot().convert('RGB')), left, line['row']):
                 raise WagerForStaff(f"pressed g once on {horses[i].get('name')} but the guarantee can't be confirmed "
                                     "(not pressed again)")
         # Purple can show before a box opens (9.2446520, 22 Oct: a box left open after 'g' hid the betslip, which then
         # read as 0 selections): answer any box that opens now, before the next line is clicked
         answer_entry_popups()
+    scroll_betslip_to_end()  # back down, as Betty left it (user, 31 Oct)
 
 
 def check_slip_before_f8(horses: list[dict], struck_clock: str | None):
@@ -5575,8 +5700,7 @@ def check_slip_before_f8(horses: list[dict], struck_clock: str | None):
         arr = np.array(img.convert('RGB'))
         if any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values()):
             answer_entry_popups()
-            img = pyautogui.screenshot()
-        lines = read_betslip_selections(img)
+        lines = read_whole_betslip()
         fault = _slip_fault(lines, horses, struck_clock)
         if not fault:
             break
@@ -5593,6 +5717,18 @@ def _f8_selected(img: Any) -> list[bool]:
     arr = np.array(img.convert('RGB'))
     return [_colour_share(arr, (x + 2, int(y + i * F8_ROW_HEIGHT_1368) + 3, w - 4, int(F8_ROW_HEIGHT_1368) - 6),
                           F8_ROW_GREEN) >= 0.4 for i in range(F8_NUM_ROWS)]
+
+
+def _f8_row_turns(row: int, selected: bool, timeout: float = NAV_TIMEOUT) -> bool:
+    """Colour only: whether the bet list's row shows `selected` (green, or not) within `timeout` seconds (0 = now)."""
+    t0 = time.time()
+    while True:
+        _check_stop()
+        if _f8_selected(pyautogui.screenshot())[row] == selected:
+            return True
+        if time.time() - t0 >= timeout:
+            return False
+        time.sleep(0.04)
 
 
 def _f8_texts(img: Any) -> list[str]:
@@ -5772,17 +5908,27 @@ def choose_bet_type(canon: str, extending: bool = False):
     if rows[i][0] != label:
         print(f"[*] Bet list: '{rows[i][0]}' taken as {canon} ('{label}').")
     x, y, w, _ = F8_BET_LIST_REGION_1368
-    if not rows[i][1]:
-        betty_click(x + w // 2, int(y + (i + 0.5) * F8_ROW_HEIGHT_1368))
-        time.sleep(0.05)
+
+    def row_centre(r: int) -> tuple[int, int]:
+        return x + w // 2, int(y + (r + 0.5) * F8_ROW_HEIGHT_1368)
+
+    # A click on a row toggles it, so a row is clicked only once Betty has shown it isn't chosen. Its shortcut chooses
+    # it, but Betty can be slow to show that (each way just pressed): the row has NAV_TIMEOUT to turn green first
+    # (9.2459384, 31 Oct: Trebles read 0.08 s after 'b' as not chosen, clicked off, Singles off too: nothing chosen)
+    if not _f8_row_turns(i, True, NAV_TIMEOUT if key else 0):
+        betty_click(*row_centre(i))
+        if not _f8_row_turns(i, True):
+            raise WagerForStaff(f"clicked {canon} in Betty's bet list but it didn't turn green (not clicked again)")
 
     # Selecting a row doesn't change the list, so the rows' names are known: from here only the green is read
     if not extending:
         for j, selected in enumerate(_f8_selected(pyautogui.screenshot())):
             if selected and j != i:
                 print(f"[*] Deselecting '{rows[j][0]}' (only {canon} wanted).")
-                betty_click(x + w // 2, int(y + (j + 0.5) * F8_ROW_HEIGHT_1368))
-                time.sleep(0.05)
+                betty_click(*row_centre(j))
+                if not _f8_row_turns(j, False):
+                    raise WagerForStaff(f"'{rows[j][0]}' stayed chosen in Betty's bet list after a click "
+                                        "(not clicked again)")
         chosen = [rows[j][0] for j, sel in enumerate(_f8_selected(pyautogui.screenshot())) if sel]
         if chosen != [rows[i][0]]:
             raise WagerForStaff(f"could not select only {canon} in Betty's bet list (selected: {chosen})")

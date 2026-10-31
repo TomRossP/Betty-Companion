@@ -7,6 +7,10 @@ Builds the Betty Companion release: python build_release.py
   4. dist\\BettyCompanion-<version>.zip, with its SHA-256 (to check a download, or for a false-positive report)
 
 The tills need nothing installed: unzip, double-click BettyCompanion.exe.
+
+This PC runs the built exe too, so the build stops while BettyCompanion.exe is running (a build over the running
+program on 31 Oct deleted its Tesseract mid-wager), and the per-PC files next to the exe (logs\\, .env,
+betty_paths.json: anything the build doesn't make) are set aside and put back, never zipped (the logs hold slips).
 """
 import hashlib
 import os
@@ -21,6 +25,44 @@ DIST = os.path.join(ROOT, "dist")
 APP = os.path.join(DIST, "BettyCompanion")
 TESSERACT_SRC = os.environ.get("TESSERACT_SRC", r"C:\Program Files\Tesseract-OCR")
 TESSDATA = ["eng.traineddata", "configs", "tessconfigs"]  # English only; the program never asks for osd
+BUILT = {"BettyCompanion.exe", "_internal", "README.txt"}  # what the build makes in APP; anything else is the PC's
+KEPT = os.path.join(DIST, "BettyCompanion.kept")             # the PC's files while the build runs
+EXE_NAME = "BettyCompanion.exe"
+
+
+def running_copies() -> list[str]:
+    """PIDs of BettyCompanion.exe running on this PC (tasklist; [] when it can't be asked)."""
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {EXE_NAME}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return []
+    return [line.split('","')[1] for line in out.splitlines() if line.startswith(f'"{EXE_NAME}"')]
+
+
+def set_aside_pc_files() -> list[str]:
+    """Moves the PC's own files out of APP into KEPT (a rename: same drive); their names."""
+    if os.path.exists(KEPT):
+        sys.exit(f"An earlier build was interrupted: this PC's files (logs, settings) are in {KEPT}. "
+                 f"Move them back into {APP}, delete the empty {KEPT}, then build again.")
+    names = sorted(n for n in os.listdir(APP) if n not in BUILT) if os.path.isdir(APP) else []
+    if names:
+        os.makedirs(KEPT)
+        for name in names:
+            os.replace(os.path.join(APP, name), os.path.join(KEPT, name))
+        print(f"Set aside this PC's files: {', '.join(names)}")
+    return names
+
+
+def put_back_pc_files(names: list[str]):
+    """The PC's files back into APP (made if the build failed before it), then KEPT removed once empty."""
+    if not names:
+        return
+    os.makedirs(APP, exist_ok=True)
+    for name in names:
+        os.replace(os.path.join(KEPT, name), os.path.join(APP, name))
+    os.rmdir(KEPT)
+    print(f"Put back this PC's files: {', '.join(names)}")
 
 
 def dlls_needed(folder: str, exe: str) -> set[str]:
@@ -77,23 +119,32 @@ def folder_size(path: str) -> int:
 
 def main():
     ver = version()
+    running = running_copies()
+    if running:
+        sys.exit(f"{EXE_NAME} is running (PID {', '.join(running)}): close Betty Companion (Stop, then close its "
+                 "window) and build again. Nothing was changed.")
     print(f"Building Betty Companion {ver}")
-    shutil.rmtree(APP, ignore_errors=True)
-    subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN",
-                    os.path.join(ROOT, "BettyCompanion.spec")], cwd=ROOT, check=True)
-    copy_tesseract(os.path.join(APP, "_internal", "tesseract"))
-    shutil.copy2(os.path.join(ROOT, "release", "README.txt"), APP)
-    zip_path = os.path.join(DIST, f"BettyCompanion-{ver}.zip")
-    if os.path.exists(zip_path):
-        os.remove(zip_path)
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for d, _, files in os.walk(APP):
-            for f in files:
-                full = os.path.join(d, f)
-                z.write(full, os.path.join("BettyCompanion", os.path.relpath(full, APP)))
-    digest = sha256(zip_path)
-    with open(zip_path + ".sha256", "w", encoding="utf-8") as f:
-        f.write(f"{digest}  {os.path.basename(zip_path)}\n")
+    kept = set_aside_pc_files()
+    try:
+        if os.path.isdir(APP):
+            shutil.rmtree(APP)  # errors raised, not ignored: a file in use stops the build
+        subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN",
+                        os.path.join(ROOT, "BettyCompanion.spec")], cwd=ROOT, check=True)
+        copy_tesseract(os.path.join(APP, "_internal", "tesseract"))
+        shutil.copy2(os.path.join(ROOT, "release", "README.txt"), APP)
+        zip_path = os.path.join(DIST, f"BettyCompanion-{ver}.zip")
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+            for d, _, files in os.walk(APP):
+                for f in files:
+                    full = os.path.join(d, f)
+                    z.write(full, os.path.join("BettyCompanion", os.path.relpath(full, APP)))
+        digest = sha256(zip_path)
+        with open(zip_path + ".sha256", "w", encoding="utf-8") as f:
+            f.write(f"{digest}  {os.path.basename(zip_path)}\n")
+    finally:
+        put_back_pc_files(kept)  # after the zip: the PC's logs never go in it
     print(f"\nFolder: {APP} ({folder_size(APP) / 1e6:.0f} MB)")
     print(f"Zip:    {zip_path} ({os.path.getsize(zip_path) / 1e6:.0f} MB)")
     print(f"SHA-256 {digest}")

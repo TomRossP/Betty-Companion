@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.1.5] - 2026-10-31
+
+Fixes from 1.1.4's first morning on the till: a 17-selection wager (9.2459368) and a bet type clicked off (9.2459384).
+
+### Fixed
+- **Betty's betslip panel shows 9 lines, and more scroll** (9.2459368: 680 x 10p trebles on 17 selections went to staff at the 9th: "shows 8 selection(s), expected 9"; it had been added). `BETSLIP_MAX_LINES` is worked out from the panel (9; it was 8). Lines are 45 px apart (`BETSLIP_LINE_PITCH`, was 45.33, which clipped lines 11-12). With more lines Betty scrolls to the newest and draws a yellow arrow (up at the top right, down at the bottom right; user's screenshots). The lines' own numbers count and match the selections on a full panel (`betslip_count`, `betslip_lines_by_number`). A line is brought into view with the arrows (`show_betslip_line`) to check it or to click it for best odds guaranteed, and the panel is scrolled back down after (`scroll_betslip_to_end`). The whole slip is read by scrolling (`read_whole_betslip`). Error guide: "Betslip couldn't be scrolled".
+- **`build_release.py` no longer wipes the till's own files or a running copy** (31 Oct: a build while the till ran the exe from `dist\BettyCompanion` deleted its Tesseract mid-wager, and every build deleted the logs). It stops while `BettyCompanion.exe` is running. Anything in the folder the build doesn't make (`logs\`, `.env`, `betty_paths.json`) is set aside in `dist\BettyCompanion.kept` and put back after, even when the build fails, and is never zipped. A `.kept` folder left by an interrupted build stops the next build until it is put back.
+- **The bet type is never clicked off by a click meant to choose it** (9.2459384: 'b' for Trebles, read 0.08 s later before Betty showed it, so Trebles was clicked off, then Singles: nothing chosen, staff). A row is clicked only once Betty has shown it isn't chosen: after a shortcut it has `NAV_TIMEOUT` to turn green (`_f8_row_turns`). Every click is confirmed by colour and never repeated.
+
 ## [1.1.4] - 2026-10-31
 
 Fixes from the cashier till's logs of 31 Oct: three wagers left for staff (9.2459179, 9.2459256, 9.2459257).
