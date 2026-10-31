@@ -3,12 +3,18 @@
 // On every slip read the relay checks the pass, counts the request against the till's daily limit and swaps the pass
 // for the real key. The launcher's "Gemini online" light uses /ping, which is free. Paste this whole file into the
 // Worker editor: see RELAY_SETUP.md.
+// 1.3.0: each till can be put in a shop on /admin. What staff teach a till (its lessons) is shared with the other
+// tills of its shop through /lessons/sync; a till in no shop keeps its own. Which shop is never told by the till: the
+// relay works it out from the till's pass, so a till only ever sees its own shop's lessons.
 
-const RELAY_VERSION = "1.2.0";
+const RELAY_VERSION = "1.3.0";
 const PAIRING_MINUTES = 10;        // a code not approved within this time expires
 const MAX_PENDING_PAIRINGS = 20;   // stops strangers filling the approval list
 const ADMIN_FAILS_PER_HOUR = 10;   // wrong admin passwords from one address before it is locked out for an hour
 const GEMINI_SLOTS = { paid: "GEMINI_KEY_PAID", free1: "GEMINI_KEY_FREE_1", free2: "GEMINI_KEY_FREE_2" };
+const LESSONS_PER_SYNC = 500;      // most lessons one sync hands back (the till asks again for the rest)
+const LESSON_IMAGE_MAX = 1500000;  // a whole-slip lesson's picture, base64 characters
+const LESSON_KINDS = ["runner", "meeting", "wording", "slip"];
 
 const enc = new TextEncoder();
 const now = () => Math.floor(Date.now() / 1000);
@@ -61,7 +67,16 @@ async function ensureSchema(db) {
     db.prepare(`CREATE TABLE IF NOT EXISTS usage (till_id TEXT NOT NULL, day TEXT NOT NULL,
       requests INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (till_id, day))`),
     db.prepare(`CREATE TABLE IF NOT EXISTS admin_failures (ip TEXT NOT NULL, at INTEGER NOT NULL)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS lessons (id TEXT PRIMARY KEY, scope TEXT NOT NULL, kind TEXT NOT NULL,
+      written TEXT NOT NULL, means TEXT NOT NULL, info TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active',
+      taught INTEGER NOT NULL DEFAULT 0, used INTEGER NOT NULL DEFAULT 0, placed INTEGER NOT NULL DEFAULT 0,
+      staff INTEGER NOT NULL DEFAULT 0, last_used TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
+      deleted INTEGER NOT NULL DEFAULT 0)`),
+    db.prepare("CREATE INDEX IF NOT EXISTS lessons_scope ON lessons (scope, updated_at)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS lesson_images (id TEXT PRIMARY KEY, scope TEXT NOT NULL, png TEXT NOT NULL)`),
   ]);
+  // 1.3.0: the tills' shop, added to a database made by an older relay (an error only says it's there already)
+  try { await db.prepare("ALTER TABLE tills ADD COLUMN shop TEXT").run(); } catch (e) { /* already there */ }
   schemaReady = true;
 }
 
@@ -161,7 +176,64 @@ async function ping(env, till) {
     limit: till.daily_limit ?? defaultLimit(env), gemini, version: RELAY_VERSION });
 }
 
-// --- Admin: approve codes, revoke tills, set daily limits ---
+// --- Lessons: what staff taught a till, shared by the tills of one shop ---
+
+// Whose lessons a till sees and adds to: its shop's, or its own when it is in no shop. From the till's row only.
+const lessonScope = (till) => till.shop ? "shop:" + till.shop : "till:" + till.id;
+
+const clip = (v, n) => String(v ?? "").slice(0, n);
+const count = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? Math.min(n, 100000) : 0; };
+
+// One call both ways: the till's changes since it last synced go in, then everything of its scope changed since
+// `since` comes back (deleted ones as deleted, so the till drops them too). Counts arrive as additions ('add'), so
+// two tills counting the same lesson at once never overwrite each other. A lesson of another scope is never touched.
+async function lessonsSync(request, env, till) {
+  const body = await request.json().catch(() => ({}));
+  const db = env.DB;
+  const scope = lessonScope(till);
+  const t = now();
+  for (const c of Array.isArray(body.changes) ? body.changes.slice(0, LESSONS_PER_SYNC) : []) {
+    const id = clip(c.id, 40);
+    if (!/^[\w-]{6,40}$/.test(id) || !LESSON_KINDS.includes(c.kind)) continue;
+    const row = await db.prepare("SELECT scope FROM lessons WHERE id = ?").bind(id).first();
+    if (row && row.scope !== scope) continue;
+    const add = c.add || {};
+    await db.prepare(`INSERT INTO lessons (id, scope, kind, written, means, info, status, taught, used, placed, staff,
+        last_used, updated_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET written = excluded.written, means = excluded.means, info = excluded.info,
+        status = excluded.status, deleted = MAX(lessons.deleted, excluded.deleted),
+        taught = lessons.taught + excluded.taught, used = lessons.used + excluded.used,
+        placed = lessons.placed + excluded.placed, staff = lessons.staff + excluded.staff,
+        last_used = MAX(lessons.last_used, excluded.last_used), updated_at = excluded.updated_at`)
+      .bind(id, scope, c.kind, clip(c.written, 200), clip(c.means, 200), clip(JSON.stringify(c.info || {}), 20000),
+        c.status === "off" ? "off" : "active", count(add.taught), count(add.used), count(add.placed), count(add.staff),
+        clip(c.last_used, 20), t, c.deleted ? 1 : 0).run();
+    if (c.deleted) {
+      await db.prepare("DELETE FROM lesson_images WHERE id = ?").bind(id).run();
+    } else if (typeof c.image_png === "string" && c.image_png.length <= LESSON_IMAGE_MAX) {
+      await db.prepare("INSERT OR REPLACE INTO lesson_images (id, scope, png) VALUES (?, ?, ?)")
+        .bind(id, scope, c.image_png).run();
+    }
+  }
+  const since = parseInt(body.since, 10) || 0;
+  const rows = (await db.prepare(`SELECT l.*, (i.id IS NOT NULL) AS has_image FROM lessons l
+      LEFT JOIN lesson_images i ON i.id = l.id WHERE l.scope = ? AND l.updated_at >= ? ORDER BY l.updated_at LIMIT ?`)
+    .bind(scope, since, LESSONS_PER_SYNC).all()).results;
+  await db.prepare("UPDATE tills SET last_seen = ? WHERE id = ?").bind(t, till.id).run();
+  const lessons = rows.map((r) => ({ id: r.id, kind: r.kind, written: r.written, means: r.means,
+    info: JSON.parse(r.info || "{}"), status: r.status, taught: r.taught, used: r.used, placed: r.placed,
+    staff: r.staff, last_used: r.last_used, deleted: !!r.deleted, has_image: !!r.has_image, updated_at: r.updated_at }));
+  return json({ ok: true, now: t, shop: till.shop || "", lessons, more: rows.length === LESSONS_PER_SYNC });
+}
+
+async function lessonImage(request, env, till) {
+  const body = await request.json().catch(() => ({}));
+  const row = await env.DB.prepare("SELECT png FROM lesson_images WHERE id = ? AND scope = ?")
+    .bind(clip(body.id, 40), lessonScope(till)).first();
+  return row ? json({ png: row.png }) : relayError(404, "no picture for that lesson");
+}
+
+// --- Admin: approve codes, revoke tills, set daily limits, put tills in shops ---
 
 async function adminCheck(request, env) {
   if (!env.ADMIN_PASSWORD) return "unset";
@@ -191,9 +263,12 @@ async function adminApi(request, env, action) {
   if (action === "state") {
     const pending = (await db.prepare(`SELECT id, code, name, created_at FROM pairings
       WHERE status = 'pending' AND created_at > ? ORDER BY created_at DESC`).bind(t - PAIRING_MINUTES * 60).all()).results;
-    const tills = (await db.prepare(`SELECT t.id, t.name, t.created_at, t.last_seen, t.daily_limit, t.active,
-      COALESCE(u.requests, 0) AS today FROM tills t LEFT JOIN usage u ON u.till_id = t.id AND u.day = ?
-      ORDER BY t.active DESC, t.name`).bind(today()).all()).results;
+    const tills = (await db.prepare(`SELECT t.id, t.name, t.created_at, t.last_seen, t.daily_limit, t.active, t.shop,
+      COALESCE(u.requests, 0) AS today,
+      (SELECT COUNT(*) FROM lessons l WHERE l.deleted = 0 AND l.scope = CASE WHEN t.shop IS NOT NULL AND t.shop <> ''
+        THEN 'shop:' || t.shop ELSE 'till:' || t.id END) AS lessons
+      FROM tills t LEFT JOIN usage u ON u.till_id = t.id AND u.day = ?
+      ORDER BY t.active DESC, t.shop, t.name`).bind(today()).all()).results;
     return json({ pending, tills, default_limit: defaultLimit(env), now: t });
   }
   if (action === "approve" || action === "reject") {
@@ -210,6 +285,20 @@ async function adminApi(request, env, action) {
     if (limit !== null && !(limit >= 0)) return relayError(400, "the limit must be a whole number, or empty for the default");
     const r = await db.prepare("UPDATE tills SET daily_limit = ? WHERE id = ?").bind(limit, String(body.till_id || "")).run();
     return r.meta.changes ? json({ ok: true }) : relayError(404, "no such till");
+  }
+  if (action === "shop") {
+    // A till joins a shop: the lessons it learned on its own go with it, so the shop's other tills get them too
+    const shop = String(body.shop || "").trim().replace(/\s+/g, " ").slice(0, 40) || null;
+    const tillId = String(body.till_id || "");
+    const till = await db.prepare("SELECT * FROM tills WHERE id = ?").bind(tillId).first();
+    if (!till) return relayError(404, "no such till");
+    const from = lessonScope(till), to = shop ? "shop:" + shop : "till:" + till.id;
+    await db.batch([
+      db.prepare("UPDATE tills SET shop = ? WHERE id = ?").bind(shop, tillId),
+      db.prepare("UPDATE lessons SET scope = ?, updated_at = ? WHERE scope = ?").bind(to, t, "till:" + till.id),
+      db.prepare("UPDATE lesson_images SET scope = ? WHERE scope = ?").bind(to, "till:" + till.id),
+    ]);
+    return json({ ok: true, from, to });
   }
   return relayError(404, "unknown action");
 }
@@ -290,10 +379,15 @@ async function load() {
     const c = el("div", null, "card row" + (x.active ? "" : " off"));
     const who = el("div", null, "grow");
     who.append(el("strong", x.name + (x.active ? "" : " (revoked)")),
-      el("div", "Today: " + x.today + " of " + limit + " reads" + (x.daily_limit == null ? " (default)" : "") + " · last used " + ago(x.last_seen), "hint"));
+      el("div", "Today: " + x.today + " of " + limit + " reads" + (x.daily_limit == null ? " (default)" : "") + " · last used " + ago(x.last_seen), "hint"),
+      el("div", (x.shop ? "Shop: " + x.shop + " · lessons shared with its other tills: " : "In no shop · its own lessons: ") + x.lessons, "hint"));
     c.append(who);
     if (x.active) {
-      c.append(btn("Daily limit", async () => {
+      c.append(btn("Shop", async () => {
+        const v = prompt("Shop for " + x.name + " (the same name for both tills of a shop; empty = no shop).\\n"
+          + "Its lessons go with it and are shared with that shop's other tills.", x.shop || "");
+        if (v !== null) await api("shop", { till_id: x.id, shop: v.trim() });
+      }), btn("Daily limit", async () => {
         const v = prompt("Reads per day for " + x.name + " (empty = default " + s.default_limit + "):", x.daily_limit ?? "");
         if (v !== null) await api("limit", { till_id: x.id, limit: v.trim() });
       }), btn("Revoke", async () => {
@@ -332,14 +426,16 @@ export default {
       if (path === "/pair/poll") return await pairPoll(request, env);
       if (path.startsWith("/admin/api/")) return await adminApi(request, env, path.slice("/admin/api/".length));
       const gemini = path.match(/^\/gemini\/(\w+)\/(.+)$/);
-      if (!gemini && path !== "/ping") return relayError(404, "not found");
+      const tillPaths = ["/ping", "/lessons/sync", "/lessons/image"];
+      if (!gemini && !tillPaths.includes(path)) return relayError(404, "not found");
       const till = await tillFor(request, env);
       if (!till) return relayError(401, "this till is not paired, or its pass was revoked");
       if (path === "/ping") return await ping(env, till);
+      if (path === "/lessons/sync") return await lessonsSync(request, env, till);
+      if (path === "/lessons/image") return await lessonImage(request, env, till);
       return await proxyGemini(request, env, till, gemini[1], gemini[2]);
     } catch (e) {
       return relayError(500, "relay error: " + (e && e.message ? e.message : e));
     }
   },
 };
-0

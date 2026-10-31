@@ -127,7 +127,16 @@ def main():
     kept = set_aside_pc_files()
     try:
         if os.path.isdir(APP):
-            shutil.rmtree(APP)  # errors raised, not ignored: a file in use stops the build
+            # Moved aside whole, then deleted: a file in use (the program, or the antivirus reading the exe) stops the
+            # move before anything is gone. Deleted file by file, a lock on the exe left the folder half deleted (31 Oct)
+            old = APP + ".old"
+            shutil.rmtree(old, ignore_errors=True)
+            try:
+                os.replace(APP, old)
+            except OSError as e:
+                sys.exit(f"{APP} is in use ({e.strerror}): nothing was changed. Close Betty Companion (or wait for "
+                         "the antivirus to finish with it) and build again.")
+            shutil.rmtree(old, ignore_errors=True)
         subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN",
                         os.path.join(ROOT, "BettyCompanion.spec")], cwd=ROOT, check=True)
         copy_tesseract(os.path.join(APP, "_internal", "tesseract"))

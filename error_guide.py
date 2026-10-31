@@ -96,10 +96,10 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Runner not found in Betty's list",
      "The race was found, but the runner couldn't be picked from Betty's runner list.",
      CHECK_BY_HAND),
-    (r"betslip line \d+ (?:isn't showing and|couldn't be brought into view|is on screen but couldn't be read)",
+    (r"betslip line \d+ (?:isn't showing and|couldn't be brought into view|is there but couldn't be read)",
      "Betslip line couldn't be reached",
-     "A selection on Betty's betslip couldn't be scrolled into view with the betslip's arrows, or showed but couldn't "
-     "be read, so it couldn't be checked or guaranteed.",
+     "A selection on Betty's betslip couldn't be scrolled into view with the betslip's arrows, or was there but no "
+     "way of reading it worked, so it couldn't be checked against the slip.",
      CHECK_BY_HAND),
     (r"meeting at the top of Betty's .* runner list could not be read",
      "Runner list couldn't be read",

@@ -1,4 +1,4 @@
-__version__ = "1.1.6"
+__version__ = "1.2.0"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -13,6 +13,7 @@ import itertools
 from collections import Counter
 from dotenv import load_dotenv
 import app_paths
+import lessons
 import relay_link
 
 # Load variables from .env (next to the exe when packaged, else in the project folder) into os.environ
@@ -192,6 +193,7 @@ from rules_engine import (
     race_time_options,
     selection_names,
     _without_names,
+    whole_bets,
 )
 
 # Betty local racecard feeds (C:\Events)
@@ -722,13 +724,17 @@ def _meeting_matches(runner_meeting: str, hinted: str) -> bool:
     (e.g. 'N' at 4.28 = whichever 'N...' meeting has a race then), never guessed from a fixed list."""
     if not hinted:
         return False
-    key = (runner_meeting, hinted)
+    key = (runner_meeting, hinted, lessons.version())  # a lesson taught since changes the answer
     if key not in _meeting_match_cache:
         _meeting_match_cache[key] = _meeting_matches_uncached(runner_meeting, hinted)
     return _meeting_match_cache[key]
 
 
 def _meeting_matches_uncached(runner_meeting: str, hinted: str) -> bool:
+    taught = lessons.meeting_for(hinted)  # this shop's own way of writing it ('N/M' = Newmarket): it decides
+    if taught:
+        return (lessons.letters(taught['means']) == lessons.letters(runner_meeting)
+                or meetings_manager.are_meetings_equivalent(runner_meeting, taught['means']))
     if meetings_manager.are_meetings_equivalent(runner_meeting, hinted):
         return True
     h = re.sub(r'[^a-z]', '', hinted.lower())
@@ -2456,6 +2462,22 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
 
     raw_selections = bets_data.get('selections', [])
     lines_list = bets_data.get('line_transcription', [])
+    global _last_reading
+    _last_reading = {'wager': _current_wager, 'img_str': img_str,
+                     'lines': [str(lt.get('raw_text', '')) for lt in lines_list]}
+    # This shop's taught bet wording ('YANKIE' = yankee): the lines and bets read as if the meaning was written
+    taught_used: dict[str, dict] = {}
+    for lt in lines_list:
+        lt['raw_text'], used = lessons.apply_wording(str(lt.get('raw_text', '')))
+        taught_used.update((x['id'], x) for x in used)
+    for b in bets_data.get('bets', []):
+        for key in ('description', 'raw_text', 'bet_type'):
+            if b.get(key):
+                b[key], used = lessons.apply_wording(str(b[key]))
+                taught_used.update((x['id'], x) for x in used)
+    for x in taught_used.values():
+        print(f"[+] Taught wording: '{x['written']}' read as '{x['means']}'.")
+        _lesson_used(x)
     # A line the reader marked struck carries the marker the bet restorer and total reader already skip
     for lt in lines_list:
         if lt.get('struck') and not re.search(r'cross(?:ed)?\s*out|struck', str(lt.get('raw_text', '')), re.I):
@@ -2780,8 +2802,27 @@ def state_read_slip_via_api(api_key, retry_hint=None, payment_pence=None, struck
     card_txt = card_for_prompt(racecard_manager.get_runners() + greyhound_card.get_runners(),
                                full=bool(retry_hint), from_mins=from_mins)
     retry_section = f"\nTHIS IS A RESCAN. {retry_hint}\n" if retry_hint else ""
+    taught_text, _ = lessons.prompt_section()
+    examples = lessons.slip_examples()
     prompt_text = (f"{SLIP_READER_RULES}\n\nTODAY'S CARD (meeting: race times as customers write them, 12-hour):\n"
-                   f"{card_txt}\n{retry_section}")
+                   f"{card_txt}\n{taught_text}{retry_section}")
+    example_parts = []
+    for x in examples:  # worked examples: a slip from this shop and its lines exactly as staff read them
+        try:
+            with open(x['image'], "rb") as f:
+                pic = base64.b64encode(f.read()).decode('utf-8')
+        except OSError:
+            continue
+        example_parts += [{"text": "EXAMPLE: a slip from this shop, and its lines exactly as the shop's staff read it"
+                                   + (f" ({x['note']})" if x.get('note') else "") + ":\n" + "\n".join(x['lines'])},
+                          {"inline_data": {"mime_type": "image/png", "data": pic}}]
+    if example_parts:
+        example_parts.append({"text": "Now the customer's slip to read:"})
+        try:  # shown, counted; not tied to this wager's outcome (they go with every slip)
+            lessons.mark_used(x['id'] for x in examples)
+        except Exception as e:
+            print(f"[-] Could not count the example slips shown: {e}")
+    # Meeting and wording lessons in the instructions count where they change a reading (pre-flight, apply_wording)
 
     line_item = {"type": "OBJECT",
                  "properties": {"line_num": {"type": "INTEGER"}, "raw_text": {"type": "STRING"},
@@ -2819,7 +2860,7 @@ def state_read_slip_via_api(api_key, retry_hint=None, payment_pence=None, struck
 
     instruction = "Now read the customer's slip in the image above and return the JSON."
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt_text},
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}, *example_parts,
                                                 {"inline_data": {"mime_type": "image/png", "data": img_str}},
                                                 {"text": instruction}]}],
         "generationConfig": {"response_mime_type": "application/json", "response_schema": schema}
@@ -3020,6 +3061,53 @@ def apply_manual_entry(horse: dict, entry: dict, runners: list[dict], struck_min
     return None
 
 
+def taught_runner(horse: dict, runners: list[dict], written_time: str, written_meeting: str) -> tuple[dict, dict] | None:
+    """
+    A runner staff taught for this handwriting (lessons 'runner': the name as read -> the runner it was), when that
+    runner is on today's card at the written time (and meeting, when one is written) and only one race fits.
+    (runner, lesson) or None.
+    """
+    _, hhmm = parse_race_time_to_minutes(written_time) if written_time else (None, '')
+    times = _times_12h_apart(hhmm) if hhmm else None
+    for lesson in lessons.runner_lessons(horse.get('name')):
+        fits = [r for r in runners if lessons.letters(r['name']) == lessons.letters(lesson['means'])
+                and (times is None or r.get('time_str') in times)
+                and (not written_meeting or _meeting_matches(r['meeting'], written_meeting))]
+        if len(fits) == 1:
+            return fits[0], lesson
+    return None
+
+
+def teach_from_manual_entry(read: dict, horse: dict, image: str | None) -> list[dict]:
+    """
+    Lessons from a selection staff typed in the can't-read box ('Remember this' ticked): the name as read is the
+    runner it matched (unless they read the same), and a meeting written 2+ letters long that didn't match is the
+    runner's meeting (a single letter is never a lesson: 'N' is Newmarket one race and Newcastle the next).
+    """
+    taught = []
+    if os.environ.get("BETTY_HEADLESS") == "1":  # the free tests' made-up entries teach nothing
+        return taught
+    try:
+        name = str(read.get('name') or '').strip()
+        if name and not name.isdigit() and selection_number({'name': name}) is None and horse.get('name') \
+                and not horse.get('favourite'):
+            x = lessons.add('runner', name, horse['name'], {'meeting': horse.get('meeting'), 'time': horse.get('time')},
+                            "typed in the can't-read box", image=image)
+            taught += [x] if x else []
+        meeting = str(read.get('meeting') or '').strip()
+        if (len(lessons.letters(meeting)) >= 2 and horse.get('meeting')
+                and not _meeting_matches(horse['meeting'], meeting)):
+            x = lessons.add('meeting', meeting, horse['meeting'], source="typed in the can't-read box", image=image)
+            taught += [x] if x else []
+    except Exception as e:
+        print(f"[-] Could not save what staff taught: {e}")
+    for x in taught:
+        print(f"[+] Learned: '{x['written']}' = {x['means']} ({lessons.KINDS[x['kind']].lower()}).")
+    if taught:
+        _lesson_sync_now.set()  # to the shop's other tills now
+    return taught
+
+
 def prompt_manual_horse_input(horse: dict, horse_idx: int, candidates: list[dict], runners: list[dict],
                               struck_mins: float | None = None, slip_img: str | None = None) -> bool:
     """
@@ -3081,6 +3169,10 @@ def prompt_manual_horse_input(horse: dict, horse_idx: int, candidates: list[dict
 
         error = tk.Label(root, text="", font=('Segoe UI', 9), fg='#EF5350', bg=bg, wraplength=480, justify='left')
         error.pack(padx=16, pady=(6, 0), anchor='w')
+        remember = tk.BooleanVar(root, value=True)
+        tk.Checkbutton(root, text="Remember this for next time (shown on the System tab, Training)", variable=remember,
+                       font=('Segoe UI', 9), fg=fg, bg=bg, selectcolor='#263238', activebackground=bg,
+                       activeforeground=fg).pack(padx=16, pady=(4, 0), anchor='w')
 
         def on_confirm():
             entry = {k: v[1].get() for k, v in fields.items()}
@@ -3090,6 +3182,7 @@ def prompt_manual_horse_input(horse: dict, horse_idx: int, candidates: list[dict
                 return
             result['confirmed'] = True
             result['typed'] = entry
+            result['remember'] = remember.get()
             root.destroy()
 
         def on_cancel():
@@ -3127,9 +3220,11 @@ def prompt_manual_horse_input(horse: dict, horse_idx: int, candidates: list[dict
     if not result['confirmed']:
         print(f"[!] Staff cancelled the entry for selection #{horse_idx}.")
         return False
+    image = save_slip_image(slip_img, _current_wager)
+    taught = teach_from_manual_entry(read, horse, image) if result.get('remember') else []
     journal_staff("manual", wager=_current_wager, selection=horse_idx, read=read, typed=result.get('typed'),
                   matched={k: horse.get(k) for k in ('name', 'number', 'meeting', 'time', 'price')},
-                  image=save_slip_image(slip_img, _current_wager), test_mode=test_mode_on.is_set())
+                  image=image, test_mode=test_mode_on.is_set(), taught=[x['id'] for x in taught])
     return True
 
 
@@ -3339,6 +3434,10 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
 
         number = selection_number(sample_horse)
         written_meeting = _hinted_meeting(sample_horse)
+        taught_meeting = lessons.meeting_for(written_meeting)
+        if taught_meeting:
+            print(f"[+] Taught meeting: '{written_meeting}' is {taught_meeting['means']}.")
+            _lesson_used(taught_meeting)
         blank = bool(sample_horse.get('_blank'))
         if blank:
             where = f"{orig_time or 'no time'} {written_meeting or 'no meeting'}"
@@ -3438,6 +3537,15 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
 
             guesses = ", ".join(f"{r['name']} ({r['time_str']} {r['meeting']})" for r in top3) or "none"
             print(f"[!] '{orig_name}' is not a confident match. Best 3 guesses: {guesses}")
+            learned = taught_runner(sample_horse, runners, orig_time, written_meeting)
+            if learned:
+                runner_match, lesson = learned
+                print(f"[+] Taught: '{orig_name}' -> '{runner_match['name']}' #{runner_match.get('number')} at "
+                      f"{runner_match['meeting']} ({runner_match['time_str']}) (staff taught '{lesson['written']}' = "
+                      f"{lesson['means']}){p_disp}")
+                _lesson_used(lesson)
+                _resolve((h_time, h_name), runner_match, price)
+                continue
 
         # Stage 3a: race-list check of the handwriting against every runner in the race(s) at the written time
         if number is None and not is_fav and not blank and img_str and api_key:
@@ -3557,6 +3665,13 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
 MAX_SCAN_ATTEMPTS = 3
 
 
+def _own_sums_note(written: int | None, paid: int) -> str:
+    """For staff: when the customer wrote the amount they paid, the slip's own sums are out, not the reading
+    (9.2459552 / 9.2459559, 31 Oct: bets of £8.00 and £7.50 under '10' and '8', paid as written)."""
+    return (f" The customer wrote £{written / 100:.2f} and paid it: their own sums don't match the bets written."
+            if written and written == paid else "")
+
+
 def bets_reading_signature(bets_list: list[dict]) -> tuple:
     """What decides the bets' cost, per bet: its words (letters and digits only: '3x 50p' and '3 x 50P' are one
     reading), stake, each way, type, runner count and cost. Two scans with the same signature read the same bets."""
@@ -3621,7 +3736,7 @@ def scan_and_reconcile(api_key, payment_pence: int | None = None, struck_time: s
         if reading == last_reading:
             print("[!] The rescan read the same bets as the scan before it: rescanning again won't change the money.")
             out['reason'] = (f"Money mismatch: the bets cost £{calc / 100:.2f} but £{target / 100:.2f} was "
-                             f"{what.split(' (')[0]}; two scans read the same bets.")
+                             f"{what.split(' (')[0]}; two scans read the same bets.{_own_sums_note(written, target)}")
             return out
         last_reading = reading
         if attempt < MAX_SCAN_ATTEMPTS:
@@ -3637,7 +3752,7 @@ def scan_and_reconcile(api_key, payment_pence: int | None = None, struck_time: s
                 return out
             continue
         out['reason'] = (f"Money mismatch: the bets cost £{calc / 100:.2f} but £{target / 100:.2f} was "
-                         f"{what.split(' (')[0]}, after {MAX_SCAN_ATTEMPTS} scans.")
+                         f"{what.split(' (')[0]}, after {MAX_SCAN_ATTEMPTS} scans.{_own_sums_note(written, target)}")
         return out
     return out
 
@@ -4591,8 +4706,10 @@ BETSLIP_LINE_TOP, BETSLIP_LINE_PITCH, BETSLIP_LINE_H = 83, 45, 18
 BETSLIP_MAX_LINES = int((BETSLIP_BETS_ROWS[0] - BETSLIP_LINE_TOP - BETSLIP_LINE_H) / BETSLIP_LINE_PITCH) + 1
 # The name is lazy and may be empty: '(.+?)?' tried one character first, so a dog line '1. Sund 4:59 11-10 BP' read
 # name '1', price '1-10' (9.2453098, 26 Oct)
+# The dot after the line number can drop out of the read ('4 Keen 8:20 14. Puerto Rico SP', 9.2459454, 31 Oct): a
+# space stands for it, the meeting's letters and the time that must follow keep the line unmistakable
 BETSLIP_SELECTION_LINE = re.compile(
-    r'^\W*(\d+|\?)\.\s*([A-Za-z\s]{3,7}?)\s+(\d{1,2}:\d{2})\s*(?:(?:(?:Trap\s*)?(\d+)\.\s*)|(?:Trap\s*(\d+)\s*))?(.*?)\s*[\W_]*(SP|NR|WD|VS|Evens|Evs|\d+\s*[-/]\s*\d+)(?:\s*(?:BP|EP))?[\W_]*$',
+    r'^\W*(\d+|\?)(?:\s*\.\s*|\s+)([A-Za-z\s]{3,7}?)\s+(\d{1,2}:\d{2})\s*(?:(?:(?:Trap\s*)?(\d+)\.\s*)|(?:Trap\s*(\d+)\s*))?(.*?)\s*[\W_]*(SP|NR|WD|VS|Evens|Evs|\d+\s*[-/]\s*\d+)(?:\s*(?:BP|EP))?[\W_]*$',
     re.IGNORECASE
 )
 GUARANTEED_PURPLE = (128, 0, 128)  # a guaranteed (BOG) price is purple; an ordinary one red (255, 0, 0)
@@ -4622,6 +4739,10 @@ def read_betslip_selections(img: Any) -> list[dict]:
                 break
             continue
         out.append(line)
+    # Whether the bottom row holds a line, read or not: only a full panel can hide lines above (_betslip_offset)
+    full = not _betslip_row_blank(arr, _betslip_row_box(left, BETSLIP_MAX_LINES - 1))
+    for line in out:
+        line['panel_full'] = full
     hidden = _betslip_offset(out)
     for line in out:
         if line['n'] is None:  # '?.' read for its number: its row says it
@@ -4633,6 +4754,11 @@ def _betslip_row_box(left: int, row: int) -> tuple:
     return left, int(BETSLIP_LINE_TOP + row * BETSLIP_LINE_PITCH), 1356 - left - 70, BETSLIP_LINE_H
 
 
+# Ways to read one betslip row, in turn: ruled rows blanked; as it is (blanking can take letters, the focus box's
+# dots); the focus box's left and top edges cut off; larger. (rules blanked, cut left px, cut top px, scale)
+BETSLIP_ROW_READS = ((True, 0, 0, 3), (False, 0, 0, 3), (False, 5, 2, 3), (False, 0, 0, 4))
+
+
 def read_betslip_row(img: Any, row: int, arr: Any = None, left: int | None = None) -> dict | None:
     """One row of the betslip panel read as a selection line ('n' = the number printed on it, None when that didn't
     read), or None when the row doesn't read as one."""
@@ -4640,9 +4766,13 @@ def read_betslip_row(img: Any, row: int, arr: Any = None, left: int | None = Non
     arr = np.array(img.convert('RGB')) if arr is None else arr
     box = _betslip_row_box(left, row)
     top = box[1]
-    m = BETSLIP_SELECTION_LINE.match(_ocr_bw(img, box, '--psm 7', 3, drop_rules=True).strip())
-    if not m:  # blanking a ruled row can take letters with it (the focus box's dots): read as it is
-        m = BETSLIP_SELECTION_LINE.match(_ocr_bw(img, box, '--psm 7', 3).strip())
+    m = None
+    for drop, trim_x, trim_y, scale in BETSLIP_ROW_READS:  # the next way only when the last didn't read
+        x, y, w, h = box
+        m = BETSLIP_SELECTION_LINE.match(_ocr_bw(img, (x + trim_x, y + trim_y, w - trim_x, h - trim_y), '--psm 7',
+                                                 scale, drop_rules=drop).strip())
+        if m:
+            break
     if not m:
         return None
     num = int(m.group(4) or m.group(5)) if (m.group(4) or m.group(5)) else None
@@ -4715,7 +4845,10 @@ def _betslip_offset(lines: list[dict]) -> int:
     if not ranked or ranked[0][1] < 2 or (len(ranked) > 1 and ranked[1][1] == ranked[0][1]):
         return 0
     hidden = ranked[0][0]
-    if hidden <= 0 or max(_row(line, i) for i, line in enumerate(lines)) < BETSLIP_MAX_LINES - 1:
+    # Full: a line read on the bottom row, or the bottom row holding one that didn't read (the focus box on it)
+    full = (max(_row(line, i) for i, line in enumerate(lines)) >= BETSLIP_MAX_LINES - 1
+            or any(line.get('panel_full') for line in lines))
+    if hidden <= 0 or not full:
         return 0
     return hidden
 
@@ -4732,10 +4865,25 @@ def betslip_lines_by_number(lines: list[dict]) -> dict[int, dict]:
     return {hidden + _row(line, i) + 1: line for i, line in enumerate(lines)}
 
 
-def betslip_count(lines: list[dict]) -> int:
-    """How many selections the betslip holds: the number of its lowest line read. Betty scrolls to the newest line as
-    each one is added, so that is the last."""
-    return max(betslip_lines_by_number(lines), default=0)
+def betslip_rows_with_text(img: Any) -> list[int]:
+    """The panel's rows holding a line, read or not, top first (colour only: down to the first blank row)."""
+    arr, left = np.array(img.convert('RGB')), betslip_left(img)
+    rows = []
+    for r in range(BETSLIP_MAX_LINES):
+        if _betslip_row_blank(arr, _betslip_row_box(left, r)):
+            break
+        rows.append(r)
+    return rows
+
+
+def betslip_count(lines: list[dict], img: Any = None) -> int:
+    """How many selections the betslip holds: the number of its lowest line read, or with `img` (the screen the
+    lines were read from) of its lowest row holding a line, read or not: a line whose text didn't read is still
+    there (9.2459454, 31 Oct: '4 Keen' unread, so 'shows 3, expected 4' with line 4 in plain sight). Betty scrolls
+    to the newest line as each one is added, so that is the last."""
+    count = max(betslip_lines_by_number(lines), default=0)
+    rows = betslip_rows_with_text(img) if img is not None else []
+    return max(count, _betslip_offset(lines) + rows[-1] + 1) if rows else count
 
 
 def _betslip_window(img: Any, lines: list[dict]) -> tuple[int, int]:
@@ -4763,11 +4911,26 @@ def _click_betslip_arrow(img: Any, which: str, hidden: int) -> bool:
     return True
 
 
+BETSLIP_UNREAD_SECS = 1.0  # a line on the panel that doesn't read is read again this long
+
+
+def betslip_row_of(n: int, lines: list[dict]) -> int:
+    """The panel row selection `n` is on, from the lines showing (read or not, its row is its place under those
+    hidden above)."""
+    return n - _betslip_offset(lines) - 1
+
+
+def _row_centre(row: int) -> int:
+    return int(BETSLIP_LINE_TOP + row * BETSLIP_LINE_PITCH) + BETSLIP_LINE_H // 2
+
+
 def show_betslip_line(n: int) -> list[dict]:
     """
     Scrolls Betty's betslip with its arrows until selection line `n` shows, and returns the lines then showing. Where
     it is comes from the lines' numbers after every click, so how far one click scrolls doesn't matter. A line on the
-    panel that doesn't read (mid-redraw, a focus box) is read again for up to NAV_TIMEOUT, never scrolled for.
+    panel that doesn't read (mid-redraw, a focus box) is read again for up to BETSLIP_UNREAD_SECS, never scrolled
+    for; then the lines are returned without it, and its row is the lines hidden above plus its place
+    (betslip_row_of).
     """
     clicks, unread_since = 0, None
     while True:
@@ -4779,8 +4942,8 @@ def show_betslip_line(n: int) -> list[dict]:
         first, last = _betslip_window(img, lines)
         if first <= n <= last:
             unread_since = unread_since or time.time()
-            if time.time() - unread_since > NAV_TIMEOUT:
-                raise WagerForStaff(f"betslip line {n} is on screen but couldn't be read")
+            if time.time() - unread_since > BETSLIP_UNREAD_SECS:
+                return lines
             time.sleep(0.1)
             continue
         if clicks >= BETSLIP_SCROLL_CLICKS:
@@ -4827,12 +4990,17 @@ def check_new_betslip_line(lines: list[dict], already_on_slip: int, label: str) 
     numbers when the panel scrolls). Betty scrolls to the new line; if the panel isn't showing it and has lines
     below, it is scrolled to."""
     want = already_on_slip + 1
-    if betslip_count(lines) < want and betslip_arrow(pyautogui.screenshot(), 'down'):
+    img = pyautogui.screenshot()
+    if betslip_count(lines, img) < want and betslip_arrow(img, 'down'):
         lines = show_betslip_line(want)
-    on_slip = betslip_count(lines)
+        img = pyautogui.screenshot()
+    on_slip = betslip_count(lines, img)
     if on_slip != want:
         raise WagerForStaff(f"after adding {label} the betslip shows {on_slip} selection(s), expected {want}")
-    return betslip_lines_by_number(lines)[want]
+    got = betslip_lines_by_number(lines).get(want)
+    if got is None:  # every way of reading it failed: what was added can't be checked
+        raise WagerForStaff(f"after adding {label}, betslip line {want} is there but couldn't be read to check it")
+    return got
 
 
 def read_betslip_bets(img: Any) -> dict:
@@ -5008,6 +5176,116 @@ def find_runner_row(img: Any, horse: dict, candidates: list[str]) -> dict | None
         if len(shown) >= 3 and name_similarity(shown, wanted[:len(shown)]) >= 0.75:
             return row
     return None
+
+
+# --- The previous-selections ("reuse") panel. Right-click on the slip image lists every selection already entered on
+# this wager, all its slips, and stays open; a row's price takes the price, its name SP, as on the runner list (user,
+# 31 Oct). Folder favourites can be reused; Master Index entries crash Betty, and the program never makes any.
+# Rows ('Harl 10:32 | The Favourite | price') are 36 px apart from y = 286, in the runner list's columns (screen 15).
+REUSE_ROW_TOP, REUSE_ROW_PITCH = 286, 36
+REUSE_ROWS = 9  # rows above the folder buttons
+SLIP_IMAGE_SPOT = (SLIP_REGION[0] + SLIP_REGION[2] // 2, SLIP_REGION[1] + SLIP_REGION[3] // 2)  # right-clicked
+WHITE = (255, 255, 255)
+
+
+def reuse_panel_open(img: Any) -> bool:
+    """Colour only: the panel's first row is showing (white, between red borders at its top and bottom)."""
+    arr = np.array(img.convert('RGB'))
+    return (_colour_share(arr, (10, REUSE_ROW_TOP + 6, 120, 24), WHITE, 0) >= 0.6
+            and all(_colour_share(arr, (5, y, 395, 1), BETTY_RED, 60) >= 0.8
+                    for y in (REUSE_ROW_TOP, REUSE_ROW_TOP + REUSE_ROW_PITCH)))
+
+
+def reuse_panel_rows(img: Any) -> list[dict]:
+    """The panel's rows, top first: [{'row', 'label', 'time', 'name', 'y'}] ('name' without a cloth / trap number)."""
+    rows = []
+    for k in range(REUSE_ROWS):
+        y = REUSE_ROW_TOP + k * REUSE_ROW_PITCH
+        label = _ocr_bw(img, (RACE_LIST_LABEL_COL[0] + 3, y + 3, RACE_LIST_LABEL_COL[1] - 6, REUSE_ROW_PITCH - 6),
+                        '--psm 7', 3)
+        m_time = re.search(r'(\d{1,2})[:.](\d{2})', label)
+        if not m_time:
+            break  # the rows end: plain white below the last one
+        cap = re.search(r'[A-Z][A-Za-z]{2,3}', label)
+        name = _ocr_bw(img, (RACE_LIST_NAME_COL[0] + 2, y + 3, RACE_LIST_NAME_COL[1] - 6, REUSE_ROW_PITCH - 6),
+                       '--psm 7', 3)
+        rows.append({'row': k, 'label': cap.group(0).lower() if cap else '',
+                     'time': f"{int(m_time.group(1))}:{m_time.group(2)}",
+                     'name': re.sub(r'^\W*(?:trap\s*)?\d{1,2}\s*[.,]\s*', '', name, flags=re.I).strip(),
+                     'y': y + REUSE_ROW_PITCH // 2})
+    return rows
+
+
+def find_reuse_row(rows: list[dict], horse: dict) -> dict | None:
+    """The panel row that is this selection: its meeting's label (a letter out at most), time and name as far as
+    Betty shows it ('The Favourite' for the favourite). None when no row fits."""
+    want_label, want_time = betty_meeting_abbrev(horse.get('meeting', '')), clock_12h(str(horse.get('time', '')))
+    for row in rows:
+        if row['time'] != want_time or _letters_off(row['label'], want_label) > 1:
+            continue
+        shown = _letters(row['name'])
+        if horse.get('favourite'):
+            if 'favourite' in shown:
+                return row
+        elif len(shown) >= 3 and name_similarity(shown, _letters(horse.get('name'))[:len(shown)]) >= 0.75:
+            return row
+    return None
+
+
+def betty_right_click(x: int, y: int):
+    """A right-click on Betty, held like click_betty_cell's (Betty's controls miss a snap click)."""
+    _check_stop()
+    pyautogui.moveTo(x, y)
+    interruptible_sleep(0.02)
+    pyautogui.mouseDown(x, y, button='right')
+    interruptible_sleep(0.035)
+    pyautogui.mouseUp(x, y, button='right')
+    interruptible_sleep(0.02)
+
+
+def enter_from_reuse_panel(horse: dict, already_on_slip: int) -> dict | None:
+    """
+    A selection already entered on this wager, added again from the previous-selections panel: right-click on the slip
+    image (unless the panel is open), its row read and clicked (price or name), and the betslip line checked as for
+    any selection. The line, or None when it couldn't be done here and nothing was added (the panel didn't open, the
+    row isn't in it, the click wasn't taken): the caller then enters it the usual way. A line added but wrong: staff.
+    """
+    label = (f"{'The Favourite' if horse.get('favourite') else horse.get('name') + ' #' + str(horse.get('number'))} "
+             f"{clock_12h(str(horse.get('time', '')))} {horse.get('meeting', '')}")
+    takes_price = (not horse.get('favourite')
+                   and str(horse.get('price') or '').strip().lower() not in ('', 'sp', 'none', '0'))
+    refresh_watcher_hud(f"Entering selection {already_on_slip + 1}: {label} (previously entered)...")
+    if not reuse_panel_open(pyautogui.screenshot()):
+        betty_right_click(*SLIP_IMAGE_SPOT)
+        t0 = time.time()
+        while not reuse_panel_open(pyautogui.screenshot()):
+            _check_stop()
+            if time.time() - t0 > NAV_TIMEOUT:
+                print(f"[*] The previous-selections panel didn't open for {label}: entering it the usual way.")
+                return None
+            time.sleep(0.05)
+    row = find_reuse_row(reuse_panel_rows(pyautogui.screenshot()), horse)
+    if not row:
+        print(f"[*] {label} isn't among the previous selections: entering it the usual way.")
+        return None
+    col = RACE_LIST_PRICE_COL if takes_price else RACE_LIST_NAME_COL
+    betty_click(col[0] + col[1] // 2, row['y'])
+    print(f"[*] Added {label} from the previous selections (row {row['row'] + 1}, its "
+          f"{'price' if takes_price else 'name: SP'}).")
+    answer_entry_popups()
+    lines = _read_new_betslip_line(already_on_slip)
+    if betslip_count(lines, pyautogui.screenshot()) <= already_on_slip:
+        print(f"[*] The click on {label} in the previous selections wasn't taken: entering it the usual way.")
+        return None
+    got = check_new_betslip_line(lines, already_on_slip, label)
+    if takes_price and got['price'].upper() == 'SP':
+        raise WagerForStaff(f"the customer took {horse.get('price')} on {label} but Betty has no price for it yet")
+    problems = betslip_line_problems(got, horse)
+    if problems:
+        raise WagerForStaff(f"betslip shows {', '.join(problems)} for {label} (from the previous selections)")
+    print(f"[+] Betslip line {got['n']}: {got['meeting']} {got['time']} {got['number']}. {got['name']} {got['price']} "
+          "(checked)")
+    return got
 
 
 def nearest_meeting_label(word: str, candidates: list[str], prefer: str | None = None) -> str | None:
@@ -5186,6 +5464,11 @@ def _meetings_at(time_hhmm: str) -> list[str]:
     return sorted({r['meeting'] for r in runners if r.get('time_str') in times})
 
 
+def hhmm_on_card(meeting: str, time_hhmm: str) -> bool:
+    """Whether Betty's cards have a race at this meeting at this time (or 12 hours from it)."""
+    return meeting in _meetings_at(time_hhmm)
+
+
 def _label_has_horses_and_dogs(meeting: str, time_hhmm: str) -> bool:
     """Whether horses and dogs both race under this meeting's Betty label at this time (Doncaster horses and
     Doncaster dogs): then only the runner list's own rows say which list Betty is showing."""
@@ -5362,7 +5645,7 @@ def enter_favourite(horse: dict, already_on_slip: int):
     meeting, hhmm = horse.get('meeting', ''), str(horse.get('time', ''))
     label = f"The Favourite {clock_12h(hhmm)} {meeting}"
     refresh_watcher_hud(f"Entering selection {already_on_slip + 1}: {label} (through Betty's folder)...")
-    if detect_screen() not in (SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_UNKNOWN):
+    if detect_screen() not in (SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_UNKNOWN, SCREEN_REUSE_PANEL):
         raise WagerForStaff(f"not on race entry to open Betty's folder for {label}")
     open_race_folder(horse.get('feed'))
     pick_in_folder_list(FOLDER_MEETING_ROW, FOLDER_MEETING_ROWS, FOLDER_MEETING_UP, FOLDER_MEETING_DOWN,
@@ -5444,11 +5727,23 @@ def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: 
     return f"{meeting} {'dogs' if dogs else 'horses'}"
 
 
-def _next_runner_list(prev_top: str | None, meeting: str, candidates: list[str]) -> str:
+def runner_list_signature(img: Any) -> tuple:
+    """What heads the runner list: the top race's label, kind and first runners (numbers and names), read from the
+    whole columns. It differs whenever another race comes to the top; () when the first rows don't read."""
+    rows = race_list_rows(img)
+    if not rows or rows[0]['row'] > 1:
+        return ()
+    return tuple((r['label'], r['trap'], r['number'], _letters(r['name'])[:6]) for r in runner_list_races(rows)[0][:3])
+
+
+def _next_runner_list(prev_top: str | None, meeting: str, candidates: list[str], prev_sig: tuple = ()) -> str:
     """
-    After 'right': the next runner list (RACE_LIST) or the end of the list (EXHAUSTED). A list the screen check doesn't
-    recognise counts once its top meeting reads and differs from the one 'right' was pressed on (9.2452785, 26 Oct: 4 s
-    lost waiting on an unrecognised list). Otherwise as expect_screen after NAV_TIMEOUT.
+    After 'right': the next runner list (RACE_LIST) or the end of the list (EXHAUSTED). A runner list counts only once
+    the race on top has changed from the one 'right' was pressed on (`prev_sig`, runner_list_signature): the old list
+    still showing is a runner list too, and read as the new one it had 'right' pressed again, past the meeting wanted
+    (9.2459558, 31 Oct: Towcester read twice, Down Royal 2:38 skipped). A list the screen check doesn't recognise
+    counts once its top meeting reads and differs (9.2452785, 26 Oct). Otherwise as expect_screen after NAV_TIMEOUT:
+    the list unchanged that long means 'right' wasn't taken.
     """
     targets = {SCREEN_RACE_LIST, SCREEN_RACE_ENTRY_EXHAUSTED}
     t0 = time.time()
@@ -5456,8 +5751,14 @@ def _next_runner_list(prev_top: str | None, meeting: str, candidates: list[str])
         _check_stop()
         shot = pyautogui.screenshot()
         screen = detect_screen(shot)
-        if screen in targets:
+        if screen == SCREEN_RACE_ENTRY_EXHAUSTED:
             return screen
+        if screen in (SCREEN_RACE_LIST, SCREEN_UNKNOWN):
+            sig = runner_list_signature(shot)
+            if sig and sig != prev_sig:
+                return SCREEN_RACE_LIST
+        if screen == SCREEN_RACE_LIST and not prev_sig and time.time() - t0 >= MEETING_REREAD_SECS:
+            return screen  # nothing to compare with: as before, after a moment for Betty to redraw
         if screen == SCREEN_UNKNOWN:
             top = top_meeting_in_race_list(shot, candidates, prefer=meeting)
             if top and top != prev_top:
@@ -5479,7 +5780,7 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
         arr = np.array(img.convert('RGB'))
         box_open = any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values())
         lines = [] if box_open else read_betslip_selections(img)
-        if betslip_count(lines) > already_on_slip or time.time() - t0 > NAV_TIMEOUT:
+        if betslip_count(lines, None if box_open else img) > already_on_slip or time.time() - t0 > NAV_TIMEOUT:
             return lines
         if box_open:
             answer_entry_popups()
@@ -5487,15 +5788,19 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
             time.sleep(0.1)
 
 
-def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = False, after_same_time: bool = False):
+def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = False, after_same_time: bool = False,
+                    entered_before: bool = False):
     """
     Adds one locked selection to the current betting slip and confirms it on the betslip read-back. After a selection
     in the same race (`after_same_race`), it is chosen from the runner list still showing, with no time typed again
     (user, 26 Oct: '1:17 Romford 3-4 S/F/C' is the 1:17 once, then 3 + Enter, 4 + Enter). After one at the same time
     at another meeting (`after_same_time`), the list still showing is that time's: 'right' on from it to the meeting
     (to-do, 30 Oct: the time was typed again for every selection). A meeting the list has already passed ends it, and
-    the time is typed after all.
+    the time is typed after all. A selection already entered on an earlier slip of this wager (`entered_before`) is
+    taken from the previous-selections panel (enter_from_reuse_panel), else entered the usual way.
     """
+    if entered_before and not horse.get('void') and enter_from_reuse_panel(horse, already_on_slip):
+        return None
     if horse.get('favourite'):
         return enter_favourite(horse, already_on_slip)
     meeting, hhmm, number = horse.get('meeting', ''), str(horse.get('time', '')), horse.get('number')
@@ -5522,10 +5827,19 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
             print(f"[*] The {clock_12h(hhmm)} runner list is still showing: no time typed.")
         else:
             screen = _type_race_time(img, screen, hhmm)
-        for _ in range(MAX_MEETING_STEPS):
+        walked, walked_again = 0, False  # 'right' presses this walk; whether the list was walked from its start again
+        for _ in range(MAX_MEETING_STEPS * 2):
             if screen == SCREEN_RACE_ENTRY_EXHAUSTED and reuse:  # passed it: from the start of the list after all
                 print(f"[*] {meeting} wasn't further along the {clock_12h(hhmm)} runner list: typing the time.")
-                reuse = False
+                reuse, walked = False, 0
+                img = pyautogui.screenshot()
+                screen = _type_race_time(img, detect_screen(img), hhmm)
+            if screen == SCREEN_RACE_ENTRY_EXHAUSTED and walked and not walked_again and hhmm_on_card(meeting, hhmm):
+                # The end of the list after 'right' with the meeting on Betty's card: it was passed, not missing (a
+                # read of the list before Betty redrew it). The list is walked once more from its start.
+                print(f"[*] The end of the {clock_12h(hhmm)} runner list without {meeting}, which is on Betty's card: "
+                      "passed it. Typing the time and walking the list again.")
+                walked, walked_again = 0, True
                 img = pyautogui.screenshot()
                 screen = _type_race_time(img, detect_screen(img), hhmm)
             if screen == SCREEN_RACE_ENTRY_EXHAUSTED:
@@ -5553,8 +5867,10 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
                                         "(horses and dogs share the label)")
                 break
             print(f"[*] Runner list starts with {top or 'an unread meeting'}: 'right' to bring up {meeting}.")
+            before = runner_list_signature(pyautogui.screenshot())
             betty_press('right')
-            screen = _next_runner_list(top, meeting, candidates)
+            walked += 1
+            screen = _next_runner_list(top, meeting, candidates, before)
         else:
             raise WagerForStaff(f"could not bring {meeting} to the top of Betty's runner list")
     if row:  # a click adds it to the betslip (user, 27 Oct); typing its number would take a trap above it
@@ -5718,33 +6034,49 @@ def _line_guaranteed(arr: Any, left: int, row: int) -> bool:
     return _colour_share(arr, (left + 250, top, 160, BETSLIP_LINE_H), GUARANTEED_PURPLE, 30) >= 0.02
 
 
-def _focus_down_to(n: int) -> dict | None:
+def _focus_down_to(n: int, at: tuple, known: dict[int, dict]) -> tuple[dict, int] | None:
     """
-    Down from the focused line to selection `n` (the next one): its line once Betty's focus box is round a row whose
-    own number reads `n`, with any price box that opens on focusing answered. Down is pressed only when the focus box
-    is seen first on n - 1, the line just guaranteed. None (nothing pressed, or `n` not seen within NAV_TIMEOUT): the
-    caller clicks the line instead, so 'g' never goes to a line that isn't confirmed.
+    Down from the line just guaranteed (`at` = its number, its row, the lines hidden above) to selection `n`, the
+    next. Which line has the focus is told by where Betty's focus box is, never by reading the line under it, which
+    the box can garble (9.2459368, 31 Oct: line 4 under it didn't read, so staff). The box one row down: the panel
+    didn't move. Anywhere else, the panel may have scrolled under it, by a line or a page: the lines showing are read
+    and say how many are hidden above, so the box's row gives its line whatever Betty did (9.2459368, 15:10: Down
+    from line 9 on the bottom row was taken only for one line's scroll, so ~12 s went in a wait and a click). The
+    line's price and name come from `known`, read before the box was round it. Down is pressed only when the box is
+    seen on the line just guaranteed. (line, lines hidden above) once confirmed; None (nothing pressed, or no move
+    seen within NAV_TIMEOUT): the caller clicks the line instead, so 'g' never goes to a line that isn't confirmed.
     """
-    img = pyautogui.screenshot()
-    row = betslip_focus_row(img)
-    here = read_betslip_row(img, row) if row is not None else None
-    if not here or here['n'] != n - 1:
+    _, row, hidden = at
+    if betslip_focus_row(pyautogui.screenshot()) != row:
         return None
     betty_press('down')
     price_box = MODAL_SIGNATURES[MODAL_PRICE]['colours']
+    bottom = BETSLIP_MAX_LINES - 1
     t0 = time.time()
     while time.time() - t0 < NAV_TIMEOUT:
         _check_stop()
         img = pyautogui.screenshot()
-        if _signals_pass(np.array(img.convert('RGB')), price_box):
+        arr = np.array(img.convert('RGB'))
+        if _signals_pass(arr, price_box):  # focusing a line can open its price box (user, 30 Oct)
             answer_price_box()
             continue
-        row = betslip_focus_row(img)
-        if row is not None:
-            line = read_betslip_row(img, row)
-            if line and line['n'] == n:
-                return line
-        time.sleep(0.03)
+        now, now_hidden = betslip_focus_row(img), hidden
+        if now is None or (now == row and row != bottom):  # not moved yet (mid-panel the box can't stay put)
+            time.sleep(0.03)
+            continue
+        if now != row + 1:  # not simply a row down: how far the panel scrolled is read, not assumed
+            lines = read_betslip_selections(img)
+            known.update(betslip_lines_by_number(lines))
+            now_hidden = _betslip_offset(lines)
+        if now_hidden + now + 1 != n:
+            time.sleep(0.03)
+            continue
+        if now_hidden != hidden:  # for the log: what Betty did, so a change in it shows
+            print(f"[*] Down to line {n}: Betty scrolled the betslip {now_hidden - hidden} line(s), "
+                  f"line {n} is on its row {now + 1}.")
+        base = known.get(n) or read_betslip_row(img, now, arr) or {'price': '', 'name': ''}
+        return dict(base, n=n, row=now, y=_row_centre(now),
+                    guaranteed=_line_guaranteed(arr, betslip_left(img), now)), now_hidden
     return None
 
 
@@ -5752,10 +6084,12 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
     """
     Best odds guaranteed (user, 31 Oct): the first selection that qualifies (bog_wanted) is clicked and 'g' pressed,
     then Down to the next and 'g', and so on. Down is taken only to the line straight after one just guaranteed, and
-    only once Betty's focus box is on a line reading that number; otherwise (the first, after a line skipped, a
-    selection that doesn't qualify in between) the line is scrolled into view and clicked. A non-runner, withdrawn or
+    only once Betty's focus box is on that line; where the box goes after Down says which line it reached
+    (_focus_down_to). Otherwise (the first, after a line skipped, a selection that doesn't qualify in between, a
+    Down not seen) the line is scrolled into view and clicked by its row, read or not. A non-runner, withdrawn or
     void line is skipped and the next one clicked: Down loses focus there. Each 'g' must turn its price purple; 'g'
-    can't be undone, so it is never pressed twice: unconfirmed -> staff.
+    can't be undone, so it is never pressed twice: unconfirmed -> staff. Every line read on the way is kept (`known`),
+    so a line the focus box garbles is still known by what it showed before.
     """
     wanted = [i for i, h in enumerate(horses) if bog_wanted(h, struck_clock)]
     if not wanted:
@@ -5764,21 +6098,28 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
         return
     img = pyautogui.screenshot()
     lines = read_betslip_selections(img)
-    if betslip_count(lines) != len(horses):
-        raise WagerForStaff(f"the betslip shows {betslip_count(lines)} selection(s) before guaranteeing, "
+    if betslip_count(lines, img) != len(horses):
+        raise WagerForStaff(f"the betslip shows {betslip_count(lines, img)} selection(s) before guaranteeing, "
                             f"expected {len(horses)}")
     left = betslip_left(img)
+    known = dict(betslip_lines_by_number(lines))
     price_box = MODAL_SIGNATURES[MODAL_PRICE]['colours']
     boxes = [sig['colours'] for sig in MODAL_SIGNATURES.values()]
     refresh_watcher_hud(f"Best odds guaranteed: {len(wanted)} selection(s)...")
-    t_all, focused = time.time(), None  # focused: the selection just guaranteed, which Down goes on from
+    t_all, at = time.time(), None  # at: (number, row, lines hidden above) of the line just guaranteed
     for i in wanted:
         n, name = i + 1, horses[i].get('name')
-        line = _focus_down_to(n) if focused == n - 1 else None
-        how = 'Down'
-        if line is None:
-            line = betslip_lines_by_number(show_betslip_line(n))[n]
+        reached = _focus_down_to(n, at, known) if at and at[0] == n - 1 else None
+        if reached:
+            (line, hidden), how = reached, 'Down'
+        else:
             how = 'click'
+            lines = show_betslip_line(n)
+            known.update(betslip_lines_by_number(lines))
+            hidden, row = _betslip_offset(lines), betslip_row_of(n, lines)
+            arr = np.array(pyautogui.screenshot().convert('RGB'))
+            line = dict(known.get(n) or {'price': '', 'name': ''}, n=n, row=row, y=_row_centre(row),
+                        guaranteed=_line_guaranteed(arr, left, row))
             if not (line['guaranteed'] or line['price'].upper() in NOT_RUNNING):
                 betty_click(left + 60, line['y'])  # focus it (its "1. Meet 1:32" text, far from Remove)
                 # Focusing a selection opens its price box again (user, 30 Oct): answered before 'g', which it swallows
@@ -5786,10 +6127,10 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
                     answer_price_box()
         if line['price'].upper() in NOT_RUNNING:
             print(f"[*] Best odds guaranteed: {name} shows {line['price']}: skipped, the next is clicked.")
-            focused = None
+            at = None
             continue
+        at = (n, line['row'], hidden)
         if line['guaranteed']:
-            focused = n
             continue
         betty_press('g')
         answered, t0 = False, time.time()
@@ -5807,7 +6148,6 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
             answer_entry_popups()  # anything else in the way (e.g. late selection), answered by its label
             if not _line_guaranteed(np.array(pyautogui.screenshot().convert('RGB')), left, line['row']):
                 raise WagerForStaff(f"pressed g once on {name} but the guarantee can't be confirmed (not pressed again)")
-        focused = n
         # Purple can show before a box opens (9.2446520, 22 Oct: a box left open after 'g' hid the betslip): a box
         # showing now is answered before the next line (one look, not a wait)
         if any(_signals_pass(np.array(pyautogui.screenshot().convert('RGB')), sig) for sig in boxes):
@@ -6069,10 +6409,17 @@ STAKE_BOX_DIGITS = 8  # backspaces clearing the last stake (pence): up to £99,9
 
 
 def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None = None):
-    """On Choose Bet and Stake: stake, each way / win, bet type. `bet_no` = the bet's place in the wager, for the log."""
+    """On Choose Bet and Stake: stake, each way / win, bet type. `bet_no` = the bet's place in the wager, for the log.
+    Several whole bets of one type ('2 x 10p yankees') go in as one at the stake times that many: Betty takes one bet
+    per type, and 1 yankee at 20p is 2 yankees at 10p (it was costed as 2 and entered as 1, so Betty's total fell
+    short of the payment)."""
     stake = round(float(bet.get('stake_pence') or 0))
     if stake <= 0:
         raise WagerForStaff("a bet has no stake")
+    n_bets = whole_bets(bet)
+    if n_bets > 1:
+        print(f"[*] {n_bets} x {canon} at {stake}p: entered as 1 {canon} at {stake * n_bets}p.")
+        stake *= n_bets
     if bets_before > 0:
         time.sleep(0.15)
         for _ in range(STAKE_BOX_DIGITS):
@@ -6121,6 +6468,12 @@ def bog_wanted(horse: dict, struck_clock: str | None) -> bool:
 ORDERED_BET_TYPES = ('straight forecast', 'tricast')  # entered in the finishing order written
 
 
+def selection_key(h: dict) -> tuple[str, ...]:
+    """One selection, as Betty's betslip holds it: meeting, time, number, void, favourite (strings throughout)."""
+    return (str(h.get('meeting') or ''), str(h.get('time') or ''), str(h.get('number') or ''),
+            'void' if h.get('void') else '', 'fav' if h.get('favourite') else '')
+
+
 def same_selections(a: dict, b: dict) -> bool:
     """
     Whether bet b can go on bet a's slip with F11: the same selections, and in the same order when either bet is a
@@ -6128,8 +6481,7 @@ def same_selections(a: dict, b: dict) -> bool:
     """
     def key(bet: dict) -> list[tuple[str, ...]]:
         # strings throughout: a void selection or the favourite has no number, and None can't be sorted with ints
-        return [(str(h.get('meeting') or ''), str(h.get('time') or ''), str(h.get('number') or ''),
-                 'void' if h.get('void') else '', 'fav' if h.get('favourite') else '') for h in bet.get('horses', [])]
+        return [selection_key(h) for h in bet.get('horses', [])]
     if entry_bet_type(a) in ORDERED_BET_TYPES or entry_bet_type(b) in ORDERED_BET_TYPES:
         return key(a) == key(b)
     return sorted(key(a)) == sorted(key(b))
@@ -6239,6 +6591,7 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
         raise WagerForStaff(f"bet type(s) the program can't enter yet: {', '.join(missing)}")
     focus_betty()  # a staff dialog may just have closed: keys must reach Betty, not the console
     bets_on_slip = 0
+    entered: set[tuple] = set()  # selections entered on this wager's earlier slips (the previous-selections panel)
     for idx, (bet, canon) in enumerate(plan):
         assert canon is not None
         if not (idx and same_selections(bet, plan[idx - 1][0])):
@@ -6246,7 +6599,9 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
             for k, horse in enumerate(horses):
                 after_race = k > 0 and same_race(horse, horses[k - 1])
                 enter_selection(horse, k, after_same_race=after_race,
-                                after_same_time=k > 0 and not after_race and same_race_time(horse, horses[k - 1]))
+                                after_same_time=k > 0 and not after_race and same_race_time(horse, horses[k - 1]),
+                                entered_before=selection_key(horse) in entered)
+            entered.update(selection_key(h) for h in horses)
             apply_guarantees(bet.get('horses', []), struck_clock)
             # No whole-betslip re-read here (user, 26 Oct): every line was read back as it was entered and every
             # guarantee confirmed by its colour; the re-read failed on good slips (9.2452710). Payment is checked at F12.
@@ -6341,6 +6696,55 @@ def wait_for_staff_review(number: str) -> str:
 # --- 6d. THE WATCHER LOOP ---
 WATCHER_POLL_SECS = 5.0       # queue empty: look again this often, sitting on View Wagers
 WATCHER_UNKNOWN_LIMIT = 3     # back-out attempts that fail in a row before the watcher stops and alerts staff
+_wager_lessons: set[str] = set()  # lessons used on the current wager: counted placed / to staff when it ends
+_last_reading: dict | None = None  # the current wager's slip as read: its lines and picture (Teach from this slip)
+
+
+def _lesson_used(lesson: dict):
+    """A taught lesson used on this wager: counted now, and its wager's outcome counted when it ends."""
+    _wager_lessons.add(lesson['id'])
+    try:
+        lessons.mark_used([lesson['id']])
+    except Exception as e:  # lessons.json busy or unwritable: the wager goes on, the count is lost
+        print(f"[-] Could not count lesson {lesson['id']}: {e}")
+
+
+LESSON_SYNC_SECS = 60  # how often lessons are shared with the shop's other tills through the relay
+_lesson_sync_now = threading.Event()  # set when something is taught: shared at once, not at the next round
+
+
+def lesson_sync_loop():
+    """
+    Background: this till's lessons and its shop's kept the same through the relay (lessons.sync), every
+    LESSON_SYNC_SECS and straight after a lesson is taught. What the shop shares is said once when it changes.
+    """
+    said = None
+    while True:
+        state = lessons.sync()
+        news = (state.get('shared'), state.get('shop'), state.get('error'))
+        if news != said:
+            said = news
+            if state.get('error'):
+                print(f"[-] Lessons not shared: {state['error']}. The ones on this till still work.")
+            elif state.get('shared'):
+                print(f"[*] Lessons: shared with shop '{state['shop']}' on the relay." if state.get('shop') else
+                      "[*] Lessons: kept on the relay for this till (it's in no shop on /admin).")
+        _lesson_sync_now.wait(LESSON_SYNC_SECS)
+        _lesson_sync_now.clear()
+
+
+def _lessons_outcome(placed: bool):
+    """The current wager ended: its lessons counted as placed or to staff (a lesson that keeps sending wagers to staff
+    is turned off: said here)."""
+    ids = set(_wager_lessons)
+    _wager_lessons.clear()
+    try:
+        for x in lessons.record_outcome(ids, placed):
+            print(f"[!] Lesson turned off: '{x['written']}' = {x['means']} ({x['staff']} wagers to staff, none placed).")
+    except Exception as e:
+        print(f"[-] Could not count the wager's lessons: {e}")
+
+
 _wagers_left_for_staff: set[str] = set()  # this session: wagers placed, or stopped by Esc or a failure; not opened again (a pause is retried)
 _current_wager: str | None = None
 _nav_failures: dict[str, int] = {}  # wager -> navigation problems this session (left for staff after 2)
@@ -6454,8 +6858,9 @@ def watcher_process_wager(row: int, number: str):
     check), enter it into Betty with every step read back, then place it (F12) - or, in test mode, stop before F12
     for staff to place or cancel it.
     """
-    global _current_wager, _wager_opened
-    _current_wager, _wager_opened = number, False
+    global _current_wager, _wager_opened, _last_reading
+    _current_wager, _wager_opened, _last_reading = number, False, None
+    _wager_lessons.clear()
     details = load_wager(row, number)
     elsewhere = wager_open_elsewhere(pyautogui.screenshot())
     if elsewhere:
@@ -6483,6 +6888,7 @@ def watcher_process_wager(row: int, number: str):
     else:
         commit_wager(number, pay)
         STATUS_HUD.set_outcome(f"{summary} PLACED {time.strftime('%H:%M')}")
+        _lessons_outcome(placed=True)
     _wagers_left_for_staff.add(number)
     _current_wager = None
 
@@ -6579,7 +6985,12 @@ def leave_wager_for_staff(number: str, reason: str):
     _wagers_left_for_staff.add(number)
     print(f"[!] Wager {number} needs staff: {reason}")
     shot = save_staff_screenshot(number)
-    journal_staff("staff", wager=number, reason=reason, screenshot=shot, test_mode=test_mode_on.is_set())
+    _lessons_outcome(placed=False)
+    # The slip as read, for 'Teach from this slip' on the Staff entries tab (only when it was this wager's)
+    reading = _last_reading if _last_reading and _last_reading.get('wager') == number else None
+    journal_staff("staff", wager=number, reason=reason, screenshot=shot, test_mode=test_mode_on.is_set(),
+                  reading=reading['lines'] if reading else None,
+                  slip_image=save_slip_image(reading['img_str'], number) if reading else None)
     if test_mode_on.is_set():
         go_home()
         alert_staff(f"Wager {number} needs staff: {reason}. (Test mode: left unedited.)")
@@ -6892,6 +7303,7 @@ def main():
     keyboard.add_hotkey('shift+`', toggle_test_mode, suppress=True)
     HumanInputMonitor(on_staff_input).start()
     threading.Thread(target=watcher_loop, daemon=True).start()
+    threading.Thread(target=lesson_sync_loop, name="lessons", daemon=True).start()
     refresh_watcher_hud()
 
     if BACKEND_MODE:

@@ -4,6 +4,102 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.0] - 2026-10-31
+
+The tills of one shop share what staff teach them (phase 4 of the training plan). Needs **relay 1.3.0** to share (`relay\RELAY_SETUP.md`, "Updating the relay's code to 1.3.0"). With an older relay everything works as in 1.1.12, each till with its own lessons, and the Training tab says why it isn't sharing.
+
+### Added
+- **Shops on the relay (worker.js 1.3.0).**
+  - `/admin` has a **Shop** button on each till; both tills of a shop get the same name.
+  - The relay knows a till by its pass and works out its shop, so a till only ever sees its own shop's lessons. A till in no shop keeps its own.
+  - A till joining a shop takes what it has already learned with it.
+  - New: a `lessons` table, `lesson_images` (pictures of slips taught as examples), `tills.shop`, and the `/lessons/sync` and `/lessons/image` endpoints. The relay adds the tables itself.
+  - Counts arrive as additions, so two tills counting at once lose nothing.
+- **The tills sync their lessons with the relay** (`lessons.sync`).
+  - `lessons.json` stays the working copy, so lessons work with no internet. Each lesson notes what it still has to send: an edit, counts, a deletion, or a slip picture.
+  - The program syncs every minute (`lesson_sync_loop`) and straight after something is taught. The window syncs on the Training tab, after an edit, and every minute.
+  - Lessons taught on 1.1.12 are sent with their counts.
+  - Only the built program syncs: runs from the source folder (the free tests, development on this PC) never reach the shop's relay unless a test opts in with its own relay.
+- **The Training tab says where its lessons are shared:** with shop '...'; kept for this till on the relay; kept on this till only; or why not just now. It also shows when it last shared. The Help tab and `release\README.txt` say how sharing works.
+
+### Fixed
+- **The end of `relay\worker.js`:** a stray `0` that had followed the code since 1.0.0 is gone (harmless, but not meant to be there).
+
+### Docs
+- `relay\RELAY_SETUP.md`: updating to 1.3.0, "Shops", and what the relay now stores (lessons; for a slip taught as an example, its picture and lines).
+
+## [1.1.12] - 2026-10-31
+
+### Added
+- **The program can be taught a shop's quirks without code changes** (user, 31 Oct; phases 1-3 of the training plan). What staff teach is kept as data in `lessons.json` next to the exe (this installation's own: builds keep it, git ignores it), by `lessons.py`. Any member of staff can teach; a lesson is active at once.
+  - **Handwriting** ('MOVIT LIKE MINIE' = Moveit Like Minnie): from the can't-read box, where 'Remember this for next time' is ticked by default (`teach_from_manual_entry`). Used after the usual name match fails and before the paid re-check, only when that runner is on today's card at the written time and only one race fits (`taught_runner`).
+  - **Meetings** as the shop writes them ('N/M' = Newmarket): from the box (a meeting of 2+ letters that didn't match; a single letter never), or Add a lesson. Used by `_meeting_matches`.
+  - **Bet wording** ('YANKIE' = yankee): Add a lesson (the meaning must be bet words the program reads). The slip's lines and bets are read as if the meaning was written (`lessons.apply_wording`), then costed and checked as usual.
+  - **Whole slips**: Staff entries, Teach from this slip, on a wager left for staff. Staff correct the lines the reader read (now saved with each staff hand-off, with the slip picture). The slip reader is shown up to two such slips and their true lines as worked examples (pictures kept in `lessons\`).
+  - The slip reader's instructions get "THIS SHOP'S SHORTHAND" from the meeting and wording lessons.
+  - **System › Training** lists every lesson: written, means, taught when and on which till, used, placed and to staff, on or off, with its slip picture. It has Add a lesson, Turn off / on, and Delete, and follows the file as the program changes it.
+  - A lesson whose wagers go to staff 3 times with none placed turns itself off (`AUTO_OFF_STAFF`).
+  - **Lessons are hints only**: the racecard match, the money, the betslip read-back and Betty's total all still apply.
+  - Headless test runs teach nothing.
+- The Help tab has a section on teaching.
+
+### Fixed
+- **A build never leaves the program's folder half deleted.** The folder is moved aside whole, then deleted: a file in use (the program, or the antivirus reading the new exe) stops the move with "nothing was changed". On 31 Oct a lock on the exe, after `_internal` had gone, left a folder that couldn't run. (`build_release.py`)
+- **Several whole bets of one type are entered as one at the stake times that many** ('2 x 10p yankees': costed as 2 yankees, £2.20, but entered as 1 at 10p, so Betty's total fell short of the payment). `whole_bets` (rules_engine) decides it for the costing and the entry alike; 1 yankee at 20p is 2 yankees at 10p. Forecasts and tricasts keep their own line counts.
+
+## [1.1.11] - 2026-10-31
+
+### Fixed
+- **Guarantees by Down no longer stall where the betslip scrolls** (9.2459368, 15:10: ~12 s between lines 9 and 10, where Down from the bottom row was given up and line 10 clicked). Down from the bottom row was taken only for a one-line scroll with the focus box staying on that row. Betty scrolls further: the box lands elsewhere, and the scroll position was never re-read. Now, unless the box simply moves down a row, the lines showing are read and say how far the panel scrolled, so the box's row gives its line however Betty scrolls (`_focus_down_to`). What Betty did is logged ("Down to line 10: Betty scrolled the betslip 8 line(s) ...").
+
+## [1.1.10] - 2026-10-31
+
+### Added
+- **A Help tab** (user, 31 Oct): how to run it day to day, in plain words: what it does, starting each day, live or test, the keys on the till, what to do with a wager left for staff, the other tabs, the lights, when something goes wrong, updating. The text is `HELP` in launcher.py.
+
+### Changed
+- **The Runners tab shows when each race went off to the second** ("off 11:25:55"; user, 31 Oct: the minute isn't enough). Betty's off slips have the second; the window rounded it away.
+- **A small country flag before each meeting in the Data tab's four meeting lists** (user, 31 Oct), from the feed's country code ('UK' is the Union Jack). Drawn by the window (`flag_image`), no image files: today's countries (UK, IE, AU, US, ZA, AE, AR, CA, CL, DE, KR, MU, MX, UY) and other racing countries. A meeting the feed gives no country gets a blank space, so the names stay in line. The meeting column is the table's first, Tk's own, the only one that can show a picture (`_tree(picture_first=True)`).
+
+## [1.1.9] - 2026-10-31
+
+### Added
+- **Selections already entered on a wager come from the previous-selections panel** (user, 31 Oct: 9.2459558 and 9.2459560 typed the time again for every selection on their later slips). The panel was built in 0.20.0, removed in 0.20.7, and only recognised since 0.32.0, so nothing used it. `enter_wager` notes each selection entered (`selection_key`). On a later betting slip of the same wager, one already entered is taken from the panel (`enter_from_reuse_panel`):
+  - right-click on the slip image (unless the panel is open: it stays open);
+  - its row found by reading the rows (`reuse_panel_rows`, `find_reuse_row`: meeting label, time, name; 'The Favourite' for a favourite), not by its place;
+  - the row's price clicked when a price is taken, its name for SP (as on the runner list);
+  - the betslip line checked like any other.
+  - Folder favourites are reused too (user: only Master Index entries crash Betty, and the program makes none).
+  - When the panel doesn't open, the row isn't there, or the click isn't taken (nothing added), it says so and enters the selection the usual way. A line added but wrong goes to staff.
+  - The next new selection's '/' brings the time box back from the panel.
+
+## [1.1.8] - 2026-10-31
+
+From 1.1.7 on the till, 12:52-13:35: 17 wagers placed, 4 to staff. Two were genuine money mismatches (the slips' own sums), one the shop's rule (a price taken with none on Betty yet), and one a fault, fixed here.
+
+### Fixed
+- **'right' no longer reads the old runner list as the new one** (9.2459558: Towcester read twice after 'right', so 'right' went again and Down Royal 2:38 was passed; "not in Betty's runner list"). After 'right' a runner list counts only once the race on top has changed (`runner_list_signature`: the top race's label, kind and first runners). The old list still showing is no longer taken for the next, which also ends most of the 4 s "screen not recognised" waits.
+
+### Changed
+- **A meeting passed is walked to again.** The end of the runner list after 'right', with the meeting on Betty's card at that time (`hhmm_on_card`), means it was passed. The time is typed again and the list walked once more before staff.
+- **A money mismatch where the customer wrote what they paid says so** ("their own sums don't match the bets written"; 9.2459559: bets of £7.50 under '8', paid £8).
+
+## [1.1.7] - 2026-10-31
+
+From 1.1.6 on the till at 12:26: two wagers to staff over betslip lines that were plainly there.
+
+### Fixed
+- **A line number read without its dot still reads** (9.2459454: '4 Keen 8:20 14. Puerto Rico SP' after adding Puerto Rico, so "shows 3, expected 4"; 9.2459368: '4 Weth 1:10 1. Palamon' under the focus box, so "line 4 is on screen but couldn't be read" after three guarantees by Down). `BETSLIP_SELECTION_LINE` takes a space where the dot dropped out; the meeting and the time that must follow keep a line unmistakable.
+
+### Changed
+- **The betslip reads correct themselves rather than stop.**
+  - A row that doesn't read is read other ways in turn (`BETSLIP_ROW_READS`: ruled rows blanked, as it is, the focus box's edges cut off, larger).
+  - A row holding a line counts, read or not (`betslip_rows_with_text`, `betslip_count(lines, img)`), so a line that doesn't read can't make the betslip look a selection short.
+  - Only when no way of reading it works does a line added go to staff, saying so ("betslip line N is there but couldn't be read to check it").
+  - A line on the panel that doesn't read is no longer a reason to stop: its row is known from the others (`betslip_row_of`).
+  - Whether the panel is full (and so can hide lines above) is the bottom row holding a line, read or not (`panel_full`).
+- **Guarantees by Down know the line by where the focus box is, not by reading under it.** The box moves down a row, or at the bottom row stays while the panel scrolls one line under it. The line's price comes from what it showed before the box was round it (`known`). A line clicked is clicked by its row, read or not.
+
 ## [1.1.6] - 2026-10-31
 
 From 1.1.5's run of the 17-selection wager (9.2459368, 11:57): all 17 entered and checked and 13 guaranteed, then staff at line 14.

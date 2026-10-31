@@ -332,6 +332,24 @@ LINES_PER_BET_TYPE: dict[str, int] = {
 }
 
 
+def whole_bets(bet: dict) -> int:
+    """
+    How many whole bets of a several-line type (patent 7, yankee 11 ...) its multiplier asks for: '2 x 10p yankees' =
+    2 ('1x 50p patent' = 1, 9.2459179, 31 Oct). A multiplier that is already whole bets' lines ('7x patent',
+    '22x yankee') is that many lines, so 1 bet per 7 / 11; any other type, or no multiplier: 1. Betty takes one bet of
+    a type per line of the bet list, so entry enters the stake times this (2 yankees at 10p = 1 yankee at 20p).
+    """
+    names = selection_names(bet)
+    b_type = resolve_plain_forecast(normalize_bet_type(str(bet.get('bet_type', 'single')), str(bet.get('description', '')),
+                                                       names), len(bet.get('horses', [])))
+    per_bet = UK_BETTING_GLOSSARY.get(b_type) or LINES_PER_BET_TYPE.get(b_type) or 1
+    m = re.search(r'\b(\d+)\s*x\b', f"{bet.get('description', '')} {bet.get('raw_text', '')}".lower())
+    if per_bet <= 1 or not m or 'forecast' in b_type or 'tricast' in b_type:  # their lines follow the runners
+        return 1
+    mult = int(m.group(1))
+    return mult // per_bet if mult % per_bet == 0 else mult
+
+
 def calculate_bet_cost_pence(bet: dict) -> int:
     """
     Calculates the total cost in pence for a single bet instruction.
@@ -377,12 +395,10 @@ def calculate_bet_cost_pence(bet: dict) -> int:
     if cost is None:
         m_mult = re.search(r'\b(\d+)\s*x\b', combined_desc)
         if m_mult:
-            mult_lines = int(m_mult.group(1))
-            # A bet of several lines (patent 7, yankee 11 ...): the multiplier counts bets ('1x 50p patent' = 7 lines,
-            # 9.2459179, 31 Oct, costed 50p), unless it is already whole bets' lines ('7x 50p patent', '22x yankee')
             per_bet = UK_BETTING_GLOSSARY.get(b_type) or LINES_PER_BET_TYPE.get(b_type) or 1
-            if per_bet > 1 and mult_lines % per_bet:
-                mult_lines *= per_bet
+            # A bet of several lines: the multiplier counts whole bets ('1x 50p patent' = 7 lines, 9.2459179, 31 Oct,
+            # costed 50p before), or is already whole bets' lines ('7x 50p patent'); whole_bets says which
+            mult_lines = whole_bets(bet) * per_bet if per_bet > 1 else int(m_mult.group(1))
             cost = unit_stake * mult_lines * ew_mult
 
     # 3. Dynamic combination math based on number of horses.

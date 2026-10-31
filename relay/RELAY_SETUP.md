@@ -118,6 +118,19 @@ change the address in the pairing box before pairing.
 
 ---
 
+## Updating the relay's code to 1.3.0 (sharing what staff teach)
+
+Relay **1.3.0** lets the tills of one shop share what staff have taught them (Betty Companion 1.2.0's Training tab).
+Without it everything else works the same; each till keeps its own lessons.
+
+1. Cloudflare dashboard: **Compute (Workers)**, then **Workers & Pages**, then `betty-relay`, then **Edit code**.
+2. Select everything (Ctrl+A) and delete it. Paste in all of `relay\worker.js` from this folder. Click **Deploy**.
+3. Open `/health`. It should say `"version":"1.3.0"`.
+4. Open `/admin`. Each till now has a **Shop** button: give both tills of a shop the same shop name (for example
+   `Shop 1`). See "Shops" below.
+
+The relay adds its new tables by itself the first time it runs. Paired tills stay paired; nothing else changes.
+
 ## Updating the relay's code (1.0.0 or 1.1.0 to 1.2.0)
 
 Betty Companion 1.0.0 needs relay **1.2.0**. That version adds `/ping`, the free check behind the window's Gemini
@@ -154,6 +167,21 @@ removes the pass from that PC. Also **Revoke** it on `/admin` if it won't be pai
 **Only approve a code you can see on a till's screen at that moment.** Anyone on the internet can ask for a code. The
 approval is what makes it count. Codes you don't recognise: tap **Reject**, or leave them; they expire after 10 minutes.
 
+## Shops: sharing what staff teach
+
+Staff can teach a till how this shop's customers write (System tab, Training). With relay 1.3.0 the tills of one
+shop share those lessons:
+
+- On `/admin`, press **Shop** on a till and type the shop's name. Give the shop's other till **exactly the same
+  name**. Each till's card then says *Shop: ... · lessons shared with its other tills: N*.
+- A till decides nothing itself: the relay knows each till by its pass, works out its shop, and only ever hands it
+  that shop's lessons. A till can't see another shop's.
+- A till in no shop keeps its own lessons (on the relay too, as a copy).
+- When a till joins a shop, what it has already learned goes with it into the shop.
+- Shop names are only ever seen on `/admin`. The tills just say they share with "shop ...".
+- The tills share about once a minute while Betty Companion runs, and straight after something is taught. With no
+  internet the lessons on each till still work; they catch up when it's back.
+
 ## Day to day
 
 | To... | Do this |
@@ -163,6 +191,7 @@ approval is what makes it count. Codes you don't recognise: tap **Reject**, or l
 | Change one till's daily limit | `/admin`, then **Daily limit** on that till. Leave it empty to go back to `DAILY_LIMIT`. |
 | Replace a Gemini key | Worker, **Settings**, **Variables and Secrets**: edit the secret, then **Deploy**. The tills don't change at all. |
 | Change the admin password | Same place: edit `ADMIN_PASSWORD`, then **Deploy**. |
+| Put a till in a shop (or move it) | `/admin`, then **Shop** on that till. Empty = no shop. |
 | Locked out of `/admin` | Ten wrong passwords from one address lock that address out for an hour. Wait, or use another network (for example your phone's mobile data). |
 
 ## Good to know
@@ -171,7 +200,10 @@ approval is what makes it count. Codes you don't recognise: tap **Reject**, or l
   fails today. Nothing is guessed.
 - **The free plan** covers 100,000 requests a day at the time of writing, far more than a few tills use.
   Cloudflare's pricing page has the current figures.
-- **The relay keeps no slips and no keys in its database.** It stores only: till names, a scrambled copy (hash) of each
-  till pass that can't be turned back into the pass, pairing codes, and the daily read counts.
+- **The relay keeps no keys in its database, and no slips it reads.** It stores: till names and shops, a
+  scrambled copy (hash) of each till pass that can't be turned back into the pass, pairing codes, the daily read
+  counts, and (1.3.0) the lessons staff teach: words as written and what they mean, how often each was used, and for
+  a slip taught as a worked example, that slip's picture and its lines. Delete a lesson on a till's Training tab and
+  the relay deletes it (and its picture) too.
 - **The code is in this folder (`relay\worker.js`),** so it can go in the public GitHub repository safely: it contains
   no keys.

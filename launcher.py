@@ -11,7 +11,7 @@ When the window closes, its end of the pipe closes and the program shuts down, s
 
 Tabs: Controls (Start / Pause / Stop, the live / test switch), System (this run's and the previous run's log, the
 errors explained, what staff had to do, and Settings: pairing with the relay), Data (today's racecard files and
-meetings), Runners (every UK & Irish horse runner today). The bar at the bottom always shows whether it's ready to
+meetings), Runners (every UK & Irish horse runner today), Help (how to run it). The bar at the bottom always shows whether it's ready to
 automate (hover for why not) and whether Gemini is online.
 """
 import collections
@@ -36,11 +36,13 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 import app_paths
+import lessons
 
 WINDOW_TITLE = "Betty Companion"
 REQUIRED_SCREEN = (1366, 768)
 GEMINI_CHECK_SECS = 300   # the free Gemini check, every 5 minutes (and on a click)
 DATA_REFRESH_SECS = 60    # racecards, meetings and runners
+LESSON_SYNC_SECS = 60     # what staff taught, shared with the shop's other tills (lessons.sync)
 HEALTH_SECS = 5           # the ready light
 LOG_TAIL_SECS = 1.5
 STOP_WAIT_SECS = 15       # Stop: the program gets this long to finish before it is ended
@@ -393,6 +395,180 @@ def _dot_image(d: int, fill: tuple, bg: tuple) -> Image.Image:
     return img.resize((d, d), Image.LANCZOS)
 
 
+# --- The Help tab's text: (heading, lines). A line starting '- ' is a bullet; [[x]] is a key on the till. ---
+HELP = [
+    ("What it does", [
+        "Betty Companion works through Betty's unedited wagers for you. For each one it reads the customer's slip, "
+        "checks every selection against Betty's own racecards, enters the bets and places the wager.",
+        "Anything it can't be sure of, it leaves for staff: the wager is marked FAO MANAGER in Betty and the reason "
+        "is saved (see 'When a wager is left for staff').",
+    ]),
+    ("Starting each day", [
+        "- Make sure Betty is open and logged in.",
+        "- Double-click BettyCompanion.exe. This window opens.",
+        "- Wait for the light at the bottom to say Ready (green). If it says Not ready, point at it to see why.",
+        "- Press Start. The window steps aside so Betty is in front, and an orange box in the bottom corner of "
+        "Betty shows what it is doing.",
+    ]),
+    ("Live or test", [
+        "- The switch at the top right of the Controls tab is the mode. On (orange) = LIVE: wagers are placed. "
+        "Off = TEST: everything is entered but it stops before placing, so you can check it.",
+        "- It starts in LIVE. You can also swap with [[Shift]] + [[`]] on the till.",
+    ]),
+    ("While it is running", [
+        "- Leave the till alone while it works on a wager. The moment anyone uses the keyboard or mouse, it stops "
+        "and lets you have the till; it carries on by itself after a minute of nobody touching it.",
+        "- [[`]] (the key left of 1) switches it on or off.",
+        "- [[Esc]] stops what it is doing straight away. The wager it was on stays in the queue and is tried again.",
+        "- Pause stops it and touches nothing; Start carries on. Stop closes the program.",
+    ]),
+    ("When a wager is left for staff", [
+        "- The wager shows FAO MANAGER in Betty's unedited list. Open it and enter it by hand as usual.",
+        "- System tab, Errors: every problem in plain words, with what to check.",
+        "- System tab, Staff entries: each wager left for staff, with a picture of Betty's screen at that moment "
+        "(Open full size to see it clearly).",
+        "- Common reasons: the money on the slip doesn't add up to what was paid; a price was taken but Betty has no "
+        "price for that race yet; a selection or race couldn't be found or read.",
+        "- A box saying it can't read a selection: fill in what the slip says (name or number, time, meeting, any "
+        "price taken), or click one of the runners it suggests, and confirm. It checks your entry against the "
+        "racecard before going on. Cancel leaves the wager for staff.",
+    ]),
+    ("Teaching it this shop's slips", [
+        "It can learn how this shop's customers write, without anyone changing the program. Anyone can teach it:",
+        "- In the can't-read box, leave 'Remember this for next time' ticked: next time that handwriting (or that way "
+        "of writing a meeting) is read, it knows which runner it was.",
+        "- System tab, Staff entries: pick a wager left for staff and press Teach from this slip. Correct the lines so "
+        "they say exactly what the slip says, and save. The slip reader is shown that slip as an example from then on.",
+        "- System tab, Training, Add a lesson: how customers write a meeting ('N/M' means Newmarket) or a bet "
+        "('YANKIE' means yankee).",
+        "- System tab, Training lists everything it has learned, how often each lesson was used, and how many of those "
+        "wagers were placed. Turn off or Delete a lesson that's wrong. A lesson whose wagers keep going to staff turns "
+        "itself off.",
+        "- A lesson is only ever a hint: every check still applies (the racecard, the money, the betslip), so a wrong "
+        "lesson can send a wager to staff but never place a wrong bet.",
+        "- The shop's tills share what they learn, through the relay, once the manager has put both in the same shop "
+        "on the relay's admin page. The Training tab says whether this till is sharing. With no internet, what this "
+        "till has learned still works.",
+    ]),
+    ("The other tabs", [
+        "- Data: today's racecard files from Betty and every meeting, with its country's flag. Refresh reads them again.",
+        "- Runners: every UK and Irish horse runner today. Find and Meeting narrow the list; races already off show "
+        "the time they went off, to the second.",
+        "- System: Log (what it has done, line by line), Errors, Staff entries, Training (what it has learned), and "
+        "Settings (pairing the till).",
+    ]),
+    ("The lights at the bottom", [
+        "- Ready / Running / Not ready: whether it can work. Point at it to see what is missing.",
+        "- Gemini: whether slips can be read right now. If it is red (no internet, or the till isn't paired), slips "
+        "can't be read and wagers are left for staff.",
+    ]),
+    ("If something goes wrong", [
+        "- Press [[Esc]], or Stop. Betty is left as it is; check the wager it was on in Betty.",
+        "- Close Betty Companion and open it again.",
+        "- Still wrong: tell the manager. The System tab's Log and the 'logs' folder (Open logs folder) show what "
+        "happened. Don't delete the logs folder: it is the record of what was placed and why.",
+    ]),
+    ("Updating to a new version", [
+        "- Close Betty Companion first (Stop, then close this window).",
+        "- Replace the program files with the new ones, keeping the 'logs' folder. The till stays paired.",
+    ]),
+]
+
+
+# --- Country flags before the Data tab's meetings (user, 31 Oct), from the feed's 2-letter country ('UK' is Great
+# Britain). Drawn here, no files: plain stripes from a table, the rest by a few shapes. Unknown: no flag. ---
+FLAG_W, FLAG_H = 20, 13
+FLAG_STRIPES = {  # code: (vertical stripes?, colours, hoist to fly or top to bottom)
+    'IE': (True, ('#169B62', '#FFFFFF', '#FF883E')), 'FR': (True, ('#0055A4', '#FFFFFF', '#EF4135')),
+    'IT': (True, ('#009246', '#FFFFFF', '#CE2B37')), 'BE': (True, ('#000000', '#FDDA24', '#EF3340')),
+    'MX': (True, ('#006847', '#FFFFFF', '#CE1126')), 'PE': (True, ('#D91023', '#FFFFFF', '#D91023')),
+    'CA': (True, ('#D52B1E', '#FFFFFF', '#FFFFFF', '#D52B1E')),
+    'DE': (False, ('#000000', '#DD0000', '#FFCE00')), 'NL': (False, ('#AE1C28', '#FFFFFF', '#21468B')),
+    'AR': (False, ('#74ACDF', '#FFFFFF', '#74ACDF')), 'IN': (False, ('#FF9933', '#FFFFFF', '#138808')),
+    'MU': (False, ('#EA2839', '#1A206D', '#FFD500', '#00A551')), 'SG': (False, ('#EF3340', '#FFFFFF')),
+    'ES': (False, ('#AA151B', '#F1BF00', '#F1BF00', '#AA151B')),
+    'AE': (False, ('#00732F', '#FFFFFF', '#000000')), 'SA': (False, ('#006C35',)), 'HK': (False, ('#DE2910',)),
+    'JP': (False, ('#FFFFFF',)), 'KR': (False, ('#FFFFFF',)), 'TR': (False, ('#E30A17',)),
+    'BR': (False, ('#009C3B',)), 'QA': (False, ('#8A1538',)), 'BH': (False, ('#CE1126',)),
+}
+FLAG_DOTS = {  # a disc in the middle: code -> colour (sun, emblem, circle)
+    'AR': '#F6B40E', 'MX': '#8B5A2B', 'IN': '#000080', 'JP': '#BC002D', 'HK': '#FFFFFF', 'TR': '#FFFFFF',
+    'BR': '#002776', 'CA': '#D52B1E',
+}
+
+
+def _union_jack(d: ImageDraw.ImageDraw, w: int, h: int):
+    """The Union Jack in (0, 0, w, h): blue, white and red saltires, white and red crosses."""
+    d.rectangle((0, 0, w, h), fill='#012169')
+    for (x0, y0, x1, y1) in ((0, 0, w, h), (0, h, w, 0)):
+        d.line((x0, y0, x1, y1), fill='#FFFFFF', width=max(1, h // 4))
+        d.line((x0, y0, x1, y1), fill='#C8102E', width=max(1, h // 10))
+    d.rectangle((w * 5 // 12, 0, w * 7 // 12, h), fill='#FFFFFF')
+    d.rectangle((0, h * 4 // 12, w, h * 8 // 12), fill='#FFFFFF')
+    d.rectangle((w * 11 // 24, 0, w * 13 // 24, h), fill='#C8102E')
+    d.rectangle((0, h * 5 // 12, w, h * 7 // 12), fill='#C8102E')
+
+
+def flag_image(code: str) -> Image.Image | None:
+    """A small flag (FLAG_W x FLAG_H) for a feed's country code, or None for one not drawn here ('', 'XX', 'VR')."""
+    code = {'GB': 'UK'}.get((code or '').upper(), (code or '').upper())
+    w, h = FLAG_W * SS, FLAG_H * SS
+    img = Image.new("RGB", (w, h), '#FFFFFF')
+    d = ImageDraw.Draw(img)
+    if code in FLAG_STRIPES:
+        vertical, colours = FLAG_STRIPES[code]
+        n = len(colours)
+        for i, c in enumerate(colours):
+            d.rectangle((w * i // n, 0, w * (i + 1) // n, h) if vertical else (0, h * i // n, w, h * (i + 1) // n), fill=c)
+    if code == 'UK':
+        _union_jack(d, w, h)
+    elif code in ('AU', 'NZ'):
+        d.rectangle((0, 0, w, h), fill='#012169')
+        _union_jack(d, w // 2, h // 2)
+        star = '#FFFFFF' if code == 'AU' else '#C8102E'
+        for cx, cy, r in ((w * 3 // 4, h // 4, h // 14), (w * 2 // 3, h * 2 // 3, h // 12), (w * 5 // 6, h // 2, h // 14),
+                          (w * 3 // 4, h * 7 // 8, h // 14), (w // 4, h * 3 // 4, h // 8)):
+            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=star)
+    elif code == 'US':
+        for i in range(13):
+            d.rectangle((0, h * i // 13, w, h * (i + 1) // 13), fill='#B22234' if i % 2 == 0 else '#FFFFFF')
+        d.rectangle((0, 0, w * 2 // 5, h * 7 // 13), fill='#3C3B6E')
+    elif code == 'UY':
+        for i in range(9):
+            d.rectangle((0, h * i // 9, w, h * (i + 1) // 9), fill='#FFFFFF' if i % 2 == 0 else '#0038A8')
+        d.rectangle((0, 0, w // 3, h * 5 // 9), fill='#FFFFFF')
+        d.ellipse((w // 6 - h // 6, h * 5 // 18 - h // 6, w // 6 + h // 6, h * 5 // 18 + h // 6), fill='#FCD116')
+    elif code == 'CL':
+        d.rectangle((0, h // 2, w, h), fill='#D52B1E')
+        d.rectangle((0, 0, w // 3, h // 2), fill='#0039A6')
+        d.ellipse((w // 6 - h // 10, h // 4 - h // 10, w // 6 + h // 10, h // 4 + h // 10), fill='#FFFFFF')
+    elif code == 'ZA':
+        d.rectangle((0, 0, w, h // 2), fill='#E03C31')
+        d.rectangle((0, h // 2, w, h), fill='#001489')
+        d.polygon([(0, 0), (w // 3, 0), (w // 2, h * 2 // 5), (w, h * 2 // 5), (w, h * 3 // 5), (w // 2, h * 3 // 5),
+                   (w // 3, h), (0, h)], fill='#FFFFFF')
+        d.polygon([(0, h // 10), (w // 4, h // 10), (w // 2 - w // 20, h * 9 // 20), (w, h * 9 // 20), (w, h * 11 // 20),
+                   (w // 2 - w // 20, h * 11 // 20), (w // 4, h * 9 // 10), (0, h * 9 // 10)], fill='#007749')
+        d.polygon([(0, h // 4), (w // 4, h // 2), (0, h * 3 // 4)], fill='#000000')
+    elif code == 'KR':
+        r = h // 4
+        d.pieslice((w // 2 - r, h // 2 - r, w // 2 + r, h // 2 + r), 180, 360, fill='#CD2E3A')
+        d.pieslice((w // 2 - r, h // 2 - r, w // 2 + r, h // 2 + r), 0, 180, fill='#0047A0')
+    elif code == 'AE':
+        d.rectangle((0, 0, w // 4, h), fill='#FF0000')
+    elif code in ('QA', 'BH'):
+        d.rectangle((0, 0, w // 3, h), fill='#FFFFFF')
+    elif code == 'BR':
+        d.polygon([(w // 10, h // 2), (w // 2, h // 10), (w * 9 // 10, h // 2), (w // 2, h * 9 // 10)], fill='#FFDF00')
+    elif code not in FLAG_STRIPES:
+        return None
+    if code in FLAG_DOTS:
+        r = h // 6
+        d.ellipse((w // 2 - r, h // 2 - r, w // 2 + r, h // 2 + r), fill=FLAG_DOTS[code])
+    d.rectangle((0, 0, w - 1, h - 1), outline='#B0BEC5', width=SS)  # an edge, so white flags show on white
+    return img.resize((FLAG_W, FLAG_H), Image.LANCZOS)
+
+
 class RoundButton(tk.Canvas):
     """
     A rounded button with a soft shadow, and hover, pressed and disabled shades. Takes configure(text=, state=) like
@@ -551,6 +727,7 @@ class App:
         self._build_system()
         self._build_data()
         self._build_runners()
+        self._build_help()
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self._drain)
@@ -671,9 +848,18 @@ class App:
         self.unpair_btn = RoundButton(actions, "Unpair", self.on_unpair)
         self.unpair_btn.pack(side="left", padx=6)
 
-    def _tree(self, parent, columns: list[tuple[str, str, int]], height: int = 10) -> ttk.Treeview:
+    def _tree(self, parent, columns: list[tuple[str, str, int]], height: int = 10, picture_first: bool = False
+              ) -> ttk.Treeview:
+        """A table. `picture_first`: its first column is Tk's own (#0), the only one that can show a picture (a flag)
+        before its text: rows go in with text= and image= for it, values= for the rest."""
         frame = ttk.Frame(parent)
-        tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show="headings", height=height)
+        if picture_first:
+            (key, heading, width), columns = columns[0], columns[1:]
+            tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show="tree headings", height=height)
+            tree.heading("#0", text=heading, anchor="w")
+            tree.column("#0", width=width, stretch=width > 150, anchor="w")
+        else:
+            tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show="headings", height=height)
         for key, heading, width in columns:
             tree.heading(key, text=heading)
             tree.column(key, width=width, stretch=key == columns[-1][0] or width > 150, anchor="w")
@@ -746,10 +932,16 @@ class App:
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
         self.staff_image = ttk.Label(right, text="", anchor="center")
         self.staff_image.pack(fill="both", expand=True)
-        self.open_image_btn = RoundButton(right, "Open full size", self.open_staff_image)
-        self.open_image_btn.pack(anchor="e", pady=(4, 0))
+        staff_buttons = ttk.Frame(right)
+        staff_buttons.pack(anchor="e", pady=(4, 0))
+        self.teach_btn = RoundButton(staff_buttons, "Teach from this slip", self.teach_from_slip)
+        self.teach_btn.pack(side="left", padx=(0, 6))
+        self.open_image_btn = RoundButton(staff_buttons, "Open full size", self.open_staff_image)
+        self.open_image_btn.pack(side="left")
+        self.teach_btn.configure(state="disabled")
         self.staff_tree.bind("<<TreeviewSelect>>", lambda e: self.show_staff())
 
+        self._build_training(inner)
         self._build_settings(inner)
 
     def _build_data(self):
@@ -767,6 +959,7 @@ class App:
         grid = ttk.Frame(tab)
         grid.pack(fill="both", expand=True)
         self.meeting_trees: dict[str, ttk.Treeview] = {}
+        self.flag_photos: dict[str, ImageTk.PhotoImage] = {}  # by country code (_flag)
         self.meeting_heads: dict[str, ttk.Label] = {}
         for i, (key, title) in enumerate([("horse_home", "Horses: UK & Irish"), ("horse_intl", "Horses: international"),
                                           ("dog_home", "Greyhounds: UK & Irish"),
@@ -775,8 +968,8 @@ class App:
             box.grid(row=i // 2, column=i % 2, sticky="nsew", padx=4, pady=4)
             self.meeting_heads[key] = ttk.Label(box, text=title, style="Head.TLabel")
             self.meeting_heads[key].pack(anchor="w")
-            tree = self._tree(box, [("meeting", "Meeting", 170), ("races", "Races", 50), ("first", "First", 60),
-                                    ("last", "Last", 60)], height=6)
+            tree = self._tree(box, [("meeting", "Meeting", 190), ("races", "Races", 50), ("first", "First", 60),
+                                    ("last", "Last", 60)], height=6, picture_first=True)
             tree.frame.pack(fill="both", expand=True)
             self.meeting_trees[key] = tree
         for c in (0, 1):
@@ -808,6 +1001,300 @@ class App:
                                             ("runner", "Runner", 260), ("off", "Off", 120)], height=20)
         self.runner_tree.frame.pack(fill="both", expand=True, pady=(6, 0))
         self.runner_tree.tag_configure("off", foreground="#90A4AE")
+
+    def _build_training(self, inner: ttk.Notebook):
+        """System > Training: everything staff have taught this installation (lessons.json), what each has done, and
+        Add / Turn off / Delete. Taught from the can't-read box ('Remember this'), Teach from this slip, Add a lesson."""
+        tab = ttk.Frame(inner, padding=6)
+        inner.add(tab, text=" Training ")
+        top = ttk.Frame(tab)
+        top.pack(fill="x")
+        texts = ttk.Frame(top)
+        texts.pack(side="left", fill="x", expand=True)
+        self.training_summary = ttk.Label(texts, text="", style="Big.TLabel")
+        self.training_summary.pack(anchor="w")
+        self.training_sharing = ttk.Label(texts, text="", foreground="#546E7A", wraplength=520, justify="left")
+        self.training_sharing.pack(anchor="w")
+        RoundButton(top, "Delete", self.delete_lesson).pack(side="right")
+        RoundButton(top, "Turn off / on", self.toggle_lesson).pack(side="right", padx=6)
+        RoundButton(top, "Add a lesson", self.add_lesson, colour="#0D47A1", fg="#FFFFFF", primary=True).pack(side="right")
+        pane = ttk.PanedWindow(tab, orient="vertical")
+        pane.pack(fill="both", expand=True, pady=(6, 0))
+        self.training_tree = self._tree(pane, [("kind", "Kind", 100), ("written", "Written on slips", 190),
+                                               ("means", "Means", 190), ("taught", "Taught", 120), ("used", "Used", 45),
+                                               ("placed", "Placed", 50), ("staff", "To staff", 55),
+                                               ("status", "Status", 60)], height=8)
+        pane.add(self.training_tree.frame, weight=1)
+        self.training_tree.tag_configure("off", foreground="#90A4AE")
+        detail = ttk.Frame(pane)
+        pane.add(detail, weight=1)
+        self.training_text = tk.Text(detail, wrap="word", font=("Segoe UI", 10), width=50, state="disabled",
+                                     padx=8, pady=6, bg="#FAFAFA")
+        self.training_text.tag_configure("head", font=("Segoe UI", 10, "bold"))
+        self.training_text.pack(side="left", fill="both", expand=False)
+        self.training_image = ttk.Label(detail, text="", anchor="center")
+        self.training_image.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        self.training_tree.bind("<<TreeviewSelect>>", lambda e: self.show_lesson())
+        self.training_rows: dict[str, dict] = {}
+        self.lessons_version = None
+        self.lessons_syncing = False
+        self.root.after(700, self._watch_lessons)
+        self.root.after(1500, self.sync_lessons)
+
+    def _watch_lessons(self):
+        """The list follows lessons.json (the program teaches and counts too): re-shown when the file changes."""
+        if lessons.version() != self.lessons_version:
+            self.show_training()
+        if not self.closing:
+            self.root.after(3000, self._watch_lessons)
+
+    def sync_lessons(self, again: bool = True):
+        """The shop's lessons through the relay, on a background thread (lessons.sync); the program does the same
+        while it runs. `again`: every LESSON_SYNC_SECS from now."""
+        if not self.lessons_syncing:
+            self.lessons_syncing = True
+            threading.Thread(target=lambda: self.inbox.put({"event": "_lessons", "state": lessons.sync()}),
+                             daemon=True).start()
+        if again and not self.closing:
+            self.root.after(LESSON_SYNC_SECS * 1000, self.sync_lessons)
+
+    def show_sharing(self, state: dict):
+        if state.get("error"):
+            text = f"Not shared just now: {state['error']}. The lessons on this till still work."
+        elif not state.get("shared"):
+            text = "Kept on this till only: pair it with the relay (Settings) to share with the shop's other till."
+        elif state.get("shop"):
+            text = f"Shared with the other tills of shop '{state['shop']}' through the relay."
+        else:
+            text = "Kept for this till on the relay: put it in a shop on the relay's /admin page to share them."
+        if state.get("last_sync"):
+            text += f" Last shared {state['last_sync'][11:]}."
+        self.training_sharing.configure(text=text, foreground=RED if state.get("error") else "#546E7A")
+
+    def show_training(self):
+        self.lessons_version = lessons.version()
+        items = lessons.load()
+        tree = self.training_tree
+        selected = tree.selection()
+        tree.delete(*tree.get_children())
+        self.training_rows = {}
+        for x in reversed(items):  # newest first
+            iid = x["id"]
+            self.training_rows[iid] = x
+            tree.insert("", "end", iid=iid, tags=("off",) if x.get("status") != "active" else (),
+                        values=(lessons.KINDS.get(x["kind"], x["kind"]), x["written"], x["means"],
+                                f"{_day_label(x.get('created', '')[:10])} {x.get('created', '')[11:]}".strip(),
+                                x.get("used", 0), x.get("placed", 0), x.get("staff", 0),
+                                "On" if x.get("status") == "active" else "Off"))
+        if selected and selected[0] in self.training_rows:
+            tree.selection_set(selected[0])
+        on = sum(1 for x in items if x.get("status") == "active")
+        used = sum(x.get("used", 0) for x in items)
+        placed = sum(x.get("placed", 0) for x in items)
+        self.training_summary.configure(
+            text=f"{len(items)} lesson(s), {on} on; used {used} time(s), {placed} of their wagers placed"
+            if items else "Nothing taught yet: tick 'Remember this' in the can't-read box, or Add a lesson")
+
+    def _selected_lesson(self) -> dict | None:
+        sel = self.training_tree.selection()
+        return self.training_rows.get(sel[0]) if sel else None
+
+    def show_lesson(self):
+        x = self._selected_lesson()
+        if not x:
+            return
+        t = self.training_text
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        t.insert("end", f"{lessons.KINDS.get(x['kind'], x['kind'])}\n", "head")
+        t.insert("end", f"Written on slips: {x['written']}\nMeans: {x['means']}\n")
+        ctx = x.get("context") or {}
+        if ctx.get("meeting") or ctx.get("time"):
+            t.insert("end", f"First seen for: {ctx.get('meeting', '')} {ctx.get('time', '')}\n")
+        if x.get("note"):
+            t.insert("end", f"Note: {x['note']}\n")
+        t.insert("end", f"\nTaught {x.get('created', '')} on {x.get('till', '')}"
+                        f"{' (' + x['source'] + ')' if x.get('source') else ''}; taught {x.get('taught', 1)} time(s)\n")
+        t.insert("end", f"Used {x.get('used', 0)} time(s), last {x.get('last_used') or 'never'}; its wagers: "
+                        f"{x.get('placed', 0)} placed, {x.get('staff', 0)} to staff\n")
+        t.insert("end", "On\n" if x.get("status") == "active" else
+                 "Off: not used (turned off, or its wagers kept going to staff)\n", "head")
+        if x.get("lines"):
+            t.insert("end", "\nThe slip as staff read it\n", "head")
+            t.insert("end", "\n".join(f"  {ln}" for ln in x["lines"]) + "\n")
+        t.configure(state="disabled")
+        self._picture_into(self.training_image, x.get("image"))
+
+    def _picture_into(self, label: ttk.Label, path: str | None, box: tuple[int, int] | None = None):
+        if not path or not os.path.isfile(path):
+            label.configure(image="", text="No picture")
+            label.image = None
+            return
+        img = Image.open(path)
+        self.root.update_idletasks()
+        box = box or (max(200, label.winfo_width() - 8), max(150, label.winfo_height() - 8))
+        img.thumbnail(box)
+        label.image = ImageTk.PhotoImage(img)
+        label.configure(image=label.image, text="")
+
+    def toggle_lesson(self):
+        x = self._selected_lesson()
+        if x:
+            lessons.set_status(x["id"], "off" if x.get("status") == "active" else "active")
+            self.show_training()
+            self.sync_lessons(again=False)
+
+    def delete_lesson(self):
+        x = self._selected_lesson()
+        if x and messagebox.askyesno(WINDOW_TITLE, f"Delete the lesson '{x['written']}' = {x['means']}?\n\n"
+                                                   "It won't be used again. 'Turn off' keeps it, unused."):
+            lessons.delete(x["id"])
+            self.show_training()
+            self.sync_lessons(again=False)
+
+    def add_lesson(self):
+        """A meeting or bet wording the way this shop's customers write it, typed by staff."""
+        win = tk.Toplevel(self.root)
+        win.title("Add a lesson")
+        win.transient(self.root)
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Teach how this shop's customers write something", style="Head.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        kind = tk.StringVar(value="Meeting")
+        written, means = tk.StringVar(), tk.StringVar()
+        ttk.Label(frame, text="Kind").grid(row=1, column=0, sticky="w", pady=(10, 2))
+        ttk.Combobox(frame, textvariable=kind, values=["Meeting", "Bet wording"], state="readonly", width=30).grid(
+            row=1, column=1, sticky="w", pady=(10, 2))
+        ttk.Label(frame, text="Written on slips as").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(frame, textvariable=written, width=33).grid(row=2, column=1, sticky="w", pady=2)
+        ttk.Label(frame, text="Means").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Entry(frame, textvariable=means, width=33).grid(row=3, column=1, sticky="w", pady=2)
+        hint = ttk.Label(frame, foreground="#546E7A", wraplength=420, justify="left")
+        hint.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        error = ttk.Label(frame, foreground=RED, wraplength=420, justify="left")
+        error.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        def show_hint(*_):
+            hint.configure(text="e.g. 'N/M' means Newmarket, 'D/R' means Down Royal. The meeting as Betty names it."
+                           if kind.get() == "Meeting" else
+                           "e.g. 'YANKIE' means yankee, 'SUPER YANKIE' means canadian, 'X DOUB' means cross doubles, "
+                           "'ABV 5' means above 5. Write the meaning in plain bet words.")
+        kind.trace_add("write", show_hint)
+        show_hint()
+
+        def save():
+            k = "meeting" if kind.get() == "Meeting" else "wording"
+            w, m = written.get().strip(), means.get().strip()
+            if not w or not m:
+                error.configure(text="Fill in both: what is written, and what it means.")
+                return
+            if k == "meeting":
+                m = known_meeting(m, self.data)
+                if not m:
+                    error.configure(text=f"'{means.get().strip()}' isn't a meeting on Betty's cards: type it as the "
+                                         "Data tab shows it.")
+                    return
+                if len(lessons.letters(w)) < 2:
+                    error.configure(text="A single letter can't be a meeting lesson: 'N' is Newmarket one race and "
+                                         "Newcastle the next. The slip reader works those out from the card.")
+                    return
+            elif not bet_words_known(m):
+                error.configure(text=f"'{m}' isn't bet wording the program knows. Use words like yankee, canadian, "
+                                     "lucky 15, doubles, treble, each way, win, cross doubles, above 5, last 4.")
+                return
+            if not lessons.add(k, w, m, source="added on the Training tab"):
+                error.configure(text="Nothing to learn: it already reads that way.")
+                return
+            win.destroy()
+            self.show_training()
+            self.sync_lessons(again=False)
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=6, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        RoundButton(buttons, "Save", save, colour="#2E7D32", fg="#FFFFFF", primary=True).pack(side="left", padx=(0, 6))
+        RoundButton(buttons, "Cancel", win.destroy).pack(side="left")
+        win.grab_set()
+
+    def teach_from_slip(self):
+        """The slip of a wager left for staff, next to the lines the reader read: staff correct them and save, and
+        the slip reader is shown this slip and its true lines from then on (a worked example of this shop's slips)."""
+        sel = self.staff_tree.selection()
+        e = self.staff_rows.get(sel[0]) if sel else None
+        if not e or not e.get("reading") or not e.get("slip_image"):
+            return
+        win = tk.Toplevel(self.root)
+        win.title(f"Teach from the slip of wager {e.get('wager')}")
+        win.transient(self.root)
+        win.geometry("960x620")
+        body = ttk.Frame(win, padding=10)
+        body.pack(fill="both", expand=True)
+        picture = ttk.Label(body)
+        picture.pack(side="left", fill="y")
+        self._picture_into(picture, e["slip_image"], box=(440, 580))
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        ttk.Label(right, text="Correct the lines so they say exactly what the slip says", style="Head.TLabel").pack(anchor="w")
+        ttk.Label(right, text="One line of the slip per line, top to bottom: selections, bets and the total. Fix "
+                              "misread names, prices, times, stakes and bet words; delete lines that aren't on it.",
+                  wraplength=460, justify="left", foreground="#546E7A").pack(anchor="w", pady=(2, 6))
+        lines = tk.Text(right, wrap="none", font=("Consolas", 10), height=18)
+        lines.pack(fill="both", expand=True)
+        lines.insert("1.0", "\n".join(e["reading"]))
+        ttk.Label(right, text="What's special about this slip (optional)").pack(anchor="w", pady=(8, 2))
+        note = tk.StringVar()
+        ttk.Entry(right, textvariable=note).pack(fill="x")
+        error = ttk.Label(right, foreground=RED)
+        error.pack(anchor="w")
+
+        def save():
+            corrected = [ln.strip() for ln in lines.get("1.0", "end").splitlines() if ln.strip()]
+            if not corrected:
+                error.configure(text="The lines are empty.")
+                return
+            x = lessons.add("slip", f"slip of wager {e.get('wager')}", note.get().strip() or "a slip staff corrected",
+                            source="Teach from this slip", image=e["slip_image"], lines=corrected, note=note.get().strip())
+            if not x:
+                error.configure(text="Couldn't save it.")
+                return
+            win.destroy()
+            self.show_training()
+            self.sync_lessons(again=False)
+            messagebox.showinfo(WINDOW_TITLE, "Saved. The slip reader is shown this slip and its lines as an example "
+                                              "from now on (System tab, Training).")
+
+        buttons = ttk.Frame(right)
+        buttons.pack(anchor="e", pady=(8, 0))
+        RoundButton(buttons, "Save", save, colour="#2E7D32", fg="#FFFFFF", primary=True).pack(side="left", padx=(0, 6))
+        RoundButton(buttons, "Cancel", win.destroy).pack(side="left")
+
+    def _build_help(self):
+        """The Help tab: how to run it, day to day, in plain words (user, 31 Oct). Read only; HELP holds the text."""
+        tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(tab, text="  Help  ")
+        text = tk.Text(tab, wrap="word", font=("Segoe UI", 10), padx=14, pady=10, bg="#FFFFFF", relief="flat",
+                       cursor="arrow", spacing1=1, spacing3=2)
+        scroll = ttk.Scrollbar(tab, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        text.tag_configure("title", font=("Segoe UI", 15, "bold"), foreground="#0D47A1", spacing3=6)
+        text.tag_configure("head", font=("Segoe UI", 11, "bold"), foreground="#263238", spacing1=12, spacing3=4)
+        text.tag_configure("bullet", lmargin1=12, lmargin2=28)
+        text.tag_configure("key", font=("Consolas", 10, "bold"), background="#ECEFF1")
+        text.insert("end", f"Betty Companion {self.version}: how to use it\n", "title")
+        for heading, lines in HELP:
+            text.insert("end", heading + "\n", "head")
+            for line in lines:
+                tags = ("bullet",) if line.startswith("- ") else ()
+                body = "•  " + line[2:] if tags else line
+                # [[x]] marks a key on the till, shown boxed
+                for i, part in enumerate(re.split(r"\[\[(.+?)\]\]", body)):
+                    text.insert("end", part, tags + (("key",) if i % 2 else ()))
+                text.insert("end", "\n", tags)
+        text.configure(state="disabled")
+        self.help_text = text
 
     # --- Events from the program and the background checks ---
 
@@ -870,6 +1357,10 @@ class App:
             self.show_ready()
         elif kind == "_pairing":
             self._pairing_update(ev)
+        elif kind == "_lessons":
+            self.lessons_syncing = False
+            self.show_sharing(ev.get("state") or {})
+            self.show_training()
         elif kind == "_betty_drive":
             if ev["root"]:
                 self.refresh_data(force=True)
@@ -1330,8 +1821,14 @@ class App:
             if e.get("from_log"):
                 t.insert("end", "\n(From the log of a run before the staff journal.)\n")
             image = e.get("screenshot")
+            if e.get("reading"):
+                t.insert("end", "\nWhat the slip reader read\n", "head")
+                t.insert("end", "\n".join(f"  {ln}" for ln in e["reading"]) + "\n")
+                t.insert("end", "\nTeach from this slip: correct these lines and the reader learns this shop's slips.\n")
         t.configure(state="disabled")
         self._show_image(image)
+        teachable = e.get("kind") == "staff" and e.get("reading") and e.get("slip_image") and os.path.isfile(e["slip_image"])
+        self.teach_btn.configure(state="normal" if teachable else "disabled")
 
     def _show_image(self, path: str | None):
         self.staff_image_path = path if path and os.path.exists(path) else None
@@ -1404,8 +1901,18 @@ class App:
             rows = (self.data.get("groups") or {}).get(key, [])
             tree.delete(*tree.get_children())
             for m in rows:
-                tree.insert("", "end", values=(m["meeting"], m["races"], m["first"], m["last"]))
+                tree.insert("", "end", text=f" {m['meeting']}", image=self._flag(m.get("country")),
+                            values=(m["races"], m["first"], m["last"]))
             self.meeting_heads[key].configure(text=f"{titles[key]} ({len(rows)})")
+
+    def _flag(self, code: str | None) -> ImageTk.PhotoImage:
+        """The flag for a meeting's country, made once per country (Tk needs the image kept); a blank of the same
+        size when there's none, so the meeting names stay in line."""
+        code = (code or "").upper()
+        if code not in self.flag_photos:
+            img = flag_image(code) or Image.new("RGBA", (FLAG_W, FLAG_H), (0, 0, 0, 0))
+            self.flag_photos[code] = ImageTk.PhotoImage(img)
+        return self.flag_photos[code]
 
     def show_runners(self):
         runners = self.data.get("runners") or []
@@ -1426,13 +1933,40 @@ class App:
                 continue
             if off is not None and self.hide_off.get():
                 continue
-            off_text = f"off {int(off) // 60:02d}:{int(off) % 60:02d}" if off is not None else ""
+            # To the second, as Betty's off slip has it (user, 31 Oct: the minute isn't enough)
+            secs = round(off * 60) if off is not None else 0
+            off_text = f"off {secs // 3600:02d}:{secs // 60 % 60:02d}:{secs % 60:02d}" if off is not None else ""
             tree.insert("", "end", values=(r["time_str"], r["meeting"], r["number"], r["name"], off_text),
                         tags=("off",) if off is not None else ())
             shown += 1
         races = len({(r["meeting"], r["time_str"]) for r in runners})
         self.runner_count.configure(text=f"{shown} shown of {len(runners)} UK & Irish horse runners in {races} races "
                                          f"at {len(meetings)} meetings")
+
+
+def known_meeting(name: str, data: dict) -> str:
+    """A meeting as Betty names it, from what staff typed: one on today's cards (the Data tab), else the meetings
+    directory's own name. '' when it's neither."""
+    want = lessons.letters(name)
+    for group in (data.get("groups") or {}).values():
+        for m in group:
+            if lessons.letters(m["meeting"]) == want:
+                return m["meeting"]
+    try:
+        from meetings_manager import meetings_manager
+        category, canonical = meetings_manager.resolve_meeting(name)
+        return canonical if category != "unknown" and canonical else ""
+    except Exception:
+        return ""
+
+
+def bet_words_known(text: str) -> bool:
+    """Whether a lesson's meaning is bet wording the program reads: a bet type, each way / win, or a 'last / above /
+    all N' scope."""
+    from rules_engine import normalize_bet_type
+    t = text.lower()
+    return bool(normalize_bet_type("", t) or re.search(r"\b(?:each\s*way|e/?w|win|cross)\b", t)
+                or re.search(r"\b(?:last|above|abv|all)\s*\d", t))
 
 
 def gemini_check() -> dict:

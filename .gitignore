@@ -3,6 +3,14 @@
 .env.*
 !.env.example
 betty_paths.json
+# What staff taught this installation (lessons.py): the shop's own, never committed
+lessons.json
+lessons.json.lock
+lessons.json.tmp
+lessons_sync.json
+lessons_sync.json.lock
+lessons_sync.json.tmp
+lessons/
 
 # Console logs (kept on each PC for 30 days)
 logs/

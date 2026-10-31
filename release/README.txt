@@ -42,8 +42,18 @@ System tab, Staff entries: each wager left for staff (with Betty's screen at tha
 had to type in (what the reader saw, what was typed, and the slip).
 
 
+TEACHING IT THIS SHOP'S SLIPS
+-----------------------------
+Staff can teach it how this shop's customers write: the "Remember this" tick in the can't-read box, Teach from this
+slip (System tab, Staff entries), and Add a lesson (System tab, Training). Everything it has learned is on the
+Training tab, in lessons.json next to BettyCompanion.exe (keep it when updating, like the logs folder).
+Both tills of a shop share what they learn once the relay is 1.3.0 and both are in the same shop on the relay's
+/admin page (relay\RELAY_SETUP.md, "Shops").
+
+
 UPDATING
 --------
-Close Betty Companion, then replace this folder with the new one, keeping the "logs" folder if you want the history.
+Close Betty Companion, then replace this folder with the new one, keeping the "logs" folder if you want the history,
+and lessons.json, lessons_sync.json and the "lessons" folder (what staff taught it).
 The till stays paired: its pass is kept by Windows, not in this folder. The new version finds Betty's drive again
 by itself (or keep betty_paths.json from the old folder).
