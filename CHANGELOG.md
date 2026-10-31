@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.1.6] - 2026-10-31
+
+From 1.1.5's run of the 17-selection wager (9.2459368, 11:57): all 17 entered and checked and 13 guaranteed, then staff at line 14.
+
+### Fixed
+- **A betslip line that won't read no longer hides the lines under it.** After 'g', Betty's dotted focus box round line 13 made it read '13.D0Wwn'; the read stopped there, so lines 14-17 weren't seen and the down arrow was looked for. Rows are now read down to the first blank one; a row that doesn't read is read again without blanking ruled rows, else left out (`read_betslip_row`, `_betslip_row_blank`). Each line's selection number is the lines hidden above the panel plus its row, where the lines read agree how many are hidden (`_betslip_offset`; a misread number is outvoted). A line on the panel that doesn't read is read again, never scrolled for, then staff ("betslip line N is on screen but couldn't be read"). The same fault sent the arrows up and down while guaranteeing.
+
+### Changed
+- **Best odds guaranteed: click the first, then 'g', Down, 'g' ...** (user, 31 Oct; it took ~1 min for 13 lines). Down is taken to the line straight after one just guaranteed, and only when Betty's focus box (`betslip_focus_row`, its red dashes) is seen on that line first and then on a line reading the next number (`_focus_down_to`); otherwise the line is scrolled into view and clicked. A non-runner, withdrawn or void line is skipped and the next one clicked. Each 'g' is still confirmed purple and never pressed twice. The 0.4 s wait for boxes after each line is one look.
+
 ## [1.1.5] - 2026-10-31
 
 Fixes from 1.1.4's first morning on the till: a 17-selection wager (9.2459368) and a bet type clicked off (9.2459384).
