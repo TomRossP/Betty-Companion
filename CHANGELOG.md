@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.1] - 2026-10-31
+
+From the cashier till (user, 31 Oct): entry had become much slower, and the previous-selections panel opened but the time was typed anyway.
+
+### Fixed
+- **The previous-selections panel is found wherever it opens** (`_reuse_row_boxes`). It was looked for only at y = 286 (one screenshot), so it opened unseen, the program waited 4 s, and the time was typed after all.
+  - Now the panel is found by its rows: thin red lines right across it with white between (no other Betty screen has them).
+  - Each row is read; a row that doesn't read is kept, and taken by its place in the order entered when the panel lists exactly the selections entered (the betslip check after the click still decides).
+  - Whenever the panel can't be used, the log says what was read and a picture is saved: `logs\reuse_<wager>_<time>.png`, the newest 10 kept.
+
+### Changed
+- **Faster entry** (user, 31 Oct: Betty buffers keys; clicks still wait for what they click):
+  - **Keys:** none waits for the screen any more: the stake, backspaces, F11, the bet shortcut, PgDn. The screenshot after every key on Choose Bet and Stake (13 or so a bet, only for the log) is gone; the keys are still listed if Betty leaves that screen.
+  - **Each way:** a bet starts at Win Only, so only an each-way bet presses E. The each-way button is no longer read first (user). Betty's total against Payment before F12 still catches a bet gone in the wrong way.
+  - **Betslip reads:** after each selection only the betslip's last two lines are read (`read_betslip_tail`): ~0.4 s, was 0.8-1.7 s per read. A blank row is seen by colour before any reading: four reads of each blank row had cost ~0.85 s.
+  - **Price box:** looked for for 0.1 s after a selection is added (was 0.4 s). The betslip read that follows answers one opening later.
+  - **Runner list:** its top is read by the label of its first rows in one read (~0.17 s, was ~0.5 s for three), and the slower read of its runners only when the label doesn't name a meeting on the card (it was done every time). A label read as the wrong race is still caught by the betslip check. Horses and dogs sharing a label are still told apart by the list's rows before anything is typed. Whether the list changed after 'right' is one read of its first rows (~0.23 s, was ~0.7 s).
+- The tests that stand in for parts of the program follow these changes (`entry_cases`, `test_runner_list_top`, `test_reuse_panel`, `test_betslip_full_panel`).
+
 ## [1.2.0] - 2026-10-31
 
 The tills of one shop share what staff teach them (phase 4 of the training plan). Needs **relay 1.3.0** to share (`relay\RELAY_SETUP.md`, "Updating the relay's code to 1.3.0"). With an older relay everything works as in 1.1.12, each till with its own lessons, and the Training tab says why it isn't sharing.

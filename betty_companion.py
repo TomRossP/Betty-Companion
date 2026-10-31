@@ -1,4 +1,4 @@
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -4618,7 +4618,6 @@ def _betslip_box(img: Any, rows: tuple) -> tuple:
     return (left, rows[0], 1356 - left, rows[1])
 RACE_LIST_ROW = (3, 2, 397, 33)               # first row of the runner list ("Worc 1:10 | 6. Reinado | 12-1")
 RACE_LIST_PITCH = 35
-F8_EACH_WAY_BOX = (152, 649, 140, 30)
 F8_ROW_GREEN = (0, 255, 64)
 MAX_MEETING_STEPS = 12   # 'right' presses before giving up on a meeting at the typed time
 MEETING_REREAD_SECS = 1.5  # an unread top meeting is read again for up to this long before 'right' is pressed
@@ -4733,12 +4732,11 @@ def read_betslip_selections(img: Any) -> list[dict]:
     arr = np.array(img.convert('RGB'))
     out = []
     for i in range(BETSLIP_MAX_LINES):
+        if _betslip_row_blank(arr, _betslip_row_box(left, i)):  # by colour first: reading a blank row 4 ways cost ~0.85 s
+            break
         line = read_betslip_row(img, i, arr, left)
-        if line is None:
-            if _betslip_row_blank(arr, _betslip_row_box(left, i)):
-                break
-            continue
-        out.append(line)
+        if line is not None:
+            out.append(line)
     # Whether the bottom row holds a line, read or not: only a full panel can hide lines above (_betslip_offset)
     full = not _betslip_row_blank(arr, _betslip_row_box(left, BETSLIP_MAX_LINES - 1))
     for line in out:
@@ -4998,6 +4996,9 @@ def check_new_betslip_line(lines: list[dict], already_on_slip: int, label: str) 
     if on_slip != want:
         raise WagerForStaff(f"after adding {label} the betslip shows {on_slip} selection(s), expected {want}")
     got = betslip_lines_by_number(lines).get(want)
+    if got is None:  # not among the last lines read: the whole betslip read once before giving up
+        lines = read_betslip_selections(img)
+        got = betslip_lines_by_number(lines).get(want) if betslip_count(lines, img) == want else None
     if got is None:  # every way of reading it failed: what was added can't be checked
         raise WagerForStaff(f"after adding {label}, betslip line {want} is there but couldn't be read to check it")
     return got
@@ -5113,16 +5114,18 @@ def race_list_is_dogs(img: Any) -> bool | None:
 
 
 RACE_LIST_ROWS = 17               # rows the runner list shows before its down arrow (scratch/betty_screens/36)
+RACE_LIST_TOP_ROWS = 4            # read to tell the race on top (its first runners): a quarter of the time of all 17
 RACE_LIST_LABEL_COL = (3, 130)    # x, width of the 'Newc 2:31' column
 RACE_LIST_PRICE_COL = (312, 88)   # x, width of the price column ('11-8' / 'NR', scratch/betty_screens/41)
 RACE_LIST_ROW_NAME = re.compile(r'^\W*(?:(trap)\s*(\d{1,2})|(\d{1,2}))\s*[.,]\s*(.*)$', re.IGNORECASE)
 
 
-def _race_list_column(img: Any, col: tuple) -> dict[int, str]:
+def _race_list_column(img: Any, col: tuple, n_rows: int = RACE_LIST_ROWS) -> dict[int, str]:
     """One column of the runner list read in a single pass, by row: {row: text}. One OCR per column, not per row:
-    17 rows x 2 columns read one at a time took several seconds on every 'right'."""
+    17 rows x 2 columns read one at a time took several seconds on every 'right'. `n_rows`: only the top ones (the
+    read takes time in proportion)."""
     x, w = col
-    h, scale = RACE_LIST_ROWS * RACE_LIST_PITCH, 3
+    h, scale = n_rows * RACE_LIST_PITCH, 3
     crop = img.convert('L').crop((x, RACE_LIST_ROW[1], x + w, RACE_LIST_ROW[1] + h)).resize((w * scale, h * scale))
     try:
         d = pytesseract.image_to_data(crop.point(lambda v: 0 if v < 150 else 255), config='--psm 6',
@@ -5137,10 +5140,12 @@ def _race_list_column(img: Any, col: tuple) -> dict[int, str]:
     return {r: " ".join(words) for r, words in rows.items()}
 
 
-def race_list_rows(img: Any) -> list[dict]:
+def race_list_rows(img: Any, n_rows: int = RACE_LIST_ROWS) -> list[dict]:
     """The runner rows showing in Betty's runner list, top first: [{'row', 'label', 'time', 'trap', 'number', 'name',
-    'y'}]. 'trap' = a dog row ('Trap 4. Newinn Carole'); a horse row reads '04. Sleedagh'. 'y' = the row's centre."""
-    labels, names = _race_list_column(img, RACE_LIST_LABEL_COL), _race_list_column(img, RACE_LIST_NAME_COL)
+    'y'}]. 'trap' = a dog row ('Trap 4. Newinn Carole'); a horse row reads '04. Sleedagh'. 'y' = the row's centre.
+    `n_rows`: only the top ones."""
+    labels = _race_list_column(img, RACE_LIST_LABEL_COL, n_rows)
+    names = _race_list_column(img, RACE_LIST_NAME_COL, n_rows)
     out = []
     for r in sorted(set(labels) & set(names)):
         m_time = re.search(r'(\d{1,2})[:.](\d{2})', labels[r])
@@ -5182,45 +5187,82 @@ def find_runner_row(img: Any, horse: dict, candidates: list[str]) -> dict | None
 # this wager, all its slips, and stays open; a row's price takes the price, its name SP, as on the runner list (user,
 # 31 Oct). Folder favourites can be reused; Master Index entries crash Betty, and the program never makes any.
 # Rows ('Harl 10:32 | The Favourite | price') are 36 px apart from y = 286, in the runner list's columns (screen 15).
-REUSE_ROW_TOP, REUSE_ROW_PITCH = 286, 36
-REUSE_ROWS = 9  # rows above the folder buttons
+REUSE_PANEL_X = (5, 400)      # the panel's width (screen 15: borders at x 5, 137, 311, 399)
+REUSE_ROW_H = (28, 46)        # a row's height between its red borders (36 on screen 15)
 SLIP_IMAGE_SPOT = (SLIP_REGION[0] + SLIP_REGION[2] // 2, SLIP_REGION[1] + SLIP_REGION[3] // 2)  # right-clicked
-WHITE = (255, 255, 255)
+REUSE_SHOTS_KEPT = 10         # pictures of the panel kept in logs/ when it couldn't be used
+
+
+def _reuse_row_boxes(img: Any) -> list[tuple[int, int]]:
+    """
+    The panel's rows wherever it opens, by colour: thin red lines right across its width (a row's top and bottom
+    borders) with white between them. It was looked for only at y = 286 (screen 15), so where it opened anywhere else
+    it wasn't seen: a 4 s wait, then the time typed after all (cashier till, 31 Oct). No other screen of Betty's has
+    white rows between such lines (screens 04, 10, 17, 19, 20, 37, 43, 45 checked).
+    """
+    a = np.array(img.convert('RGB')).astype(int)
+    x0, x1 = REUSE_PANEL_X
+    red = (a[:, x0:x1, 0] > 200) & (a[:, x0:x1, 1] < 70) & (a[:, x0:x1, 2] < 70)
+    share = red.mean(axis=1)
+    lines = [y for y in range(60, min(len(share) - 3, 625)) if share[y] >= 0.8 and share[y - 3] < 0.5 and share[y + 3] < 0.5]
+    white = a[:, :, :3].min(axis=2) > 235
+    return [(y0, y1) for y0, y1 in zip(lines, lines[1:])
+            if REUSE_ROW_H[0] <= y1 - y0 <= REUSE_ROW_H[1] and white[y0 + 4:y1 - 3, 10:130].mean() >= 0.5]
 
 
 def reuse_panel_open(img: Any) -> bool:
-    """Colour only: the panel's first row is showing (white, between red borders at its top and bottom)."""
-    arr = np.array(img.convert('RGB'))
-    return (_colour_share(arr, (10, REUSE_ROW_TOP + 6, 120, 24), WHITE, 0) >= 0.6
-            and all(_colour_share(arr, (5, y, 395, 1), BETTY_RED, 60) >= 0.8
-                    for y in (REUSE_ROW_TOP, REUSE_ROW_TOP + REUSE_ROW_PITCH)))
+    """Colour only: the panel is showing, at least one of its rows (_reuse_row_boxes)."""
+    return bool(_reuse_row_boxes(img))
 
 
 def reuse_panel_rows(img: Any) -> list[dict]:
-    """The panel's rows, top first: [{'row', 'label', 'time', 'name', 'y'}] ('name' without a cloth / trap number)."""
+    """The panel's rows, top first: [{'row', 'label', 'time', 'name', 'y', 'unread'}] ('name' without a cloth / trap
+    number). A row whose meeting and time don't read is kept, marked 'unread': its place still counts."""
     rows = []
-    for k in range(REUSE_ROWS):
-        y = REUSE_ROW_TOP + k * REUSE_ROW_PITCH
-        label = _ocr_bw(img, (RACE_LIST_LABEL_COL[0] + 3, y + 3, RACE_LIST_LABEL_COL[1] - 6, REUSE_ROW_PITCH - 6),
-                        '--psm 7', 3)
+    for k, (y0, y1) in enumerate(_reuse_row_boxes(img)):
+        h = y1 - y0
+        label = _ocr_bw(img, (RACE_LIST_LABEL_COL[0] + 3, y0 + 3, RACE_LIST_LABEL_COL[1] - 6, h - 6), '--psm 7', 3)
+        name = _ocr_bw(img, (RACE_LIST_NAME_COL[0] + 2, y0 + 3, RACE_LIST_NAME_COL[1] - 6, h - 6), '--psm 7', 3)
         m_time = re.search(r'(\d{1,2})[:.](\d{2})', label)
-        if not m_time:
-            break  # the rows end: plain white below the last one
         cap = re.search(r'[A-Z][A-Za-z]{2,3}', label)
-        name = _ocr_bw(img, (RACE_LIST_NAME_COL[0] + 2, y + 3, RACE_LIST_NAME_COL[1] - 6, REUSE_ROW_PITCH - 6),
-                       '--psm 7', 3)
         rows.append({'row': k, 'label': cap.group(0).lower() if cap else '',
-                     'time': f"{int(m_time.group(1))}:{m_time.group(2)}",
+                     'time': f"{int(m_time.group(1))}:{m_time.group(2)}" if m_time else '',
                      'name': re.sub(r'^\W*(?:trap\s*)?\d{1,2}\s*[.,]\s*', '', name, flags=re.I).strip(),
-                     'y': y + REUSE_ROW_PITCH // 2})
+                     'y': (y0 + y1) // 2, 'unread': not (m_time and cap), 'text': f"{label} | {name}"})
     return rows
 
 
-def find_reuse_row(rows: list[dict], horse: dict) -> dict | None:
-    """The panel row that is this selection: its meeting's label (a letter out at most), time and name as far as
-    Betty shows it ('The Favourite' for the favourite). None when no row fits."""
+def save_reuse_picture(number: str | None) -> str | None:
+    """Betty's screen when the previous-selections panel couldn't be used: logs/reuse_<wager>_<time>.png (the newest
+    REUSE_SHOTS_KEPT kept), so the log can be followed by what Betty showed."""
+    if os.environ.get("BETTY_HEADLESS") == "1":
+        return None
+    try:
+        log_dir = app_paths.log_dir()
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, f"reuse_{number or 'unknown'}_{time.strftime('%Y%m%d_%H%M%S')}.png")
+        pyautogui.screenshot().save(path)
+        shots = sorted((f for f in os.listdir(log_dir) if f.startswith("reuse_") and f.endswith(".png")),
+                       key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
+        for old in shots[:-REUSE_SHOTS_KEPT]:
+            os.remove(os.path.join(log_dir, old))
+        return path
+    except Exception as e:
+        print(f"[-] Could not save the panel's picture: {e}")
+        return None
+
+
+def find_reuse_row(rows: list[dict], horse: dict, order: int | None = None, entered: int | None = None) -> dict | None:
+    """
+    The panel row that is this selection: its meeting's label (a letter out at most), time and name as far as Betty
+    shows it ('The Favourite' for the favourite). When none reads as it but the panel lists exactly the selections
+    entered (`entered` rows, in the order entered) and the row at its place (`order`) didn't read, that row: its place
+    says it (the betslip check after the click still decides). None when no row fits.
+    """
     want_label, want_time = betty_meeting_abbrev(horse.get('meeting', '')), clock_12h(str(horse.get('time', '')))
     for row in rows:
+        if row.get('unread'):
+            continue
         if row['time'] != want_time or _letters_off(row['label'], want_label) > 1:
             continue
         shown = _letters(row['name'])
@@ -5229,6 +5271,9 @@ def find_reuse_row(rows: list[dict], horse: dict) -> dict | None:
                 return row
         elif len(shown) >= 3 and name_similarity(shown, _letters(horse.get('name'))[:len(shown)]) >= 0.75:
             return row
+    if order is not None and entered is not None and len(rows) == entered and 0 <= order < len(rows) \
+            and rows[order].get('unread'):
+        return dict(rows[order], by_place=True)
     return None
 
 
@@ -5243,7 +5288,8 @@ def betty_right_click(x: int, y: int):
     interruptible_sleep(0.02)
 
 
-def enter_from_reuse_panel(horse: dict, already_on_slip: int) -> dict | None:
+def enter_from_reuse_panel(horse: dict, already_on_slip: int, order: int | None = None,
+                           entered: int | None = None) -> dict | None:
     """
     A selection already entered on this wager, added again from the previous-selections panel: right-click on the slip
     image (unless the panel is open), its row read and clicked (price or name), and the betslip line checked as for
@@ -5261,13 +5307,22 @@ def enter_from_reuse_panel(horse: dict, already_on_slip: int) -> dict | None:
         while not reuse_panel_open(pyautogui.screenshot()):
             _check_stop()
             if time.time() - t0 > NAV_TIMEOUT:
-                print(f"[*] The previous-selections panel didn't open for {label}: entering it the usual way.")
+                shot = save_reuse_picture(_current_wager)
+                print(f"[*] The previous-selections panel didn't show for {label} (no rows found on the left after "
+                      f"the right-click{'; picture: ' + shot if shot else ''}): entering it the usual way.")
                 return None
             time.sleep(0.05)
-    row = find_reuse_row(reuse_panel_rows(pyautogui.screenshot()), horse)
+    rows = reuse_panel_rows(pyautogui.screenshot())
+    row = find_reuse_row(rows, horse, order, entered)
     if not row:
-        print(f"[*] {label} isn't among the previous selections: entering it the usual way.")
+        shot = save_reuse_picture(_current_wager)
+        print(f"[*] {label} isn't among the previous selections as read: "
+              f"{'; '.join(r.get('text') or f"{r.get('label')} {r.get('time')} | {r.get('name')}" for r in rows) or 'no rows read'}"
+              f"{' (picture: ' + shot + ')' if shot else ''}. Entering it the usual way.")
         return None
+    if row.get('by_place'):
+        print(f"[*] Previous selections: row {row['row'] + 1} didn't read; it is {label} by its place in the order "
+              "entered (checked on the betslip after the click).")
     col = RACE_LIST_PRICE_COL if takes_price else RACE_LIST_NAME_COL
     betty_click(col[0] + col[1] // 2, row['y'])
     print(f"[*] Added {label} from the previous selections (row {row['row'] + 1}, its "
@@ -5275,7 +5330,9 @@ def enter_from_reuse_panel(horse: dict, already_on_slip: int) -> dict | None:
     answer_entry_popups()
     lines = _read_new_betslip_line(already_on_slip)
     if betslip_count(lines, pyautogui.screenshot()) <= already_on_slip:
-        print(f"[*] The click on {label} in the previous selections wasn't taken: entering it the usual way.")
+        shot = save_reuse_picture(_current_wager)
+        print(f"[*] The click on {label} in the previous selections (row {row['row'] + 1}, y {row['y']}) wasn't taken"
+              f"{' (picture: ' + shot + ')' if shot else ''}: entering it the usual way.")
         return None
     got = check_new_betslip_line(lines, already_on_slip, label)
     if takes_price and got['price'].upper() == 'SP':
@@ -5317,9 +5374,12 @@ def top_meeting_in_race_list(img: Any, candidates: list[str], prefer: str | None
     None when the label isn't clearly one of them (`nearest_meeting_label`); a label two meetings share is `prefer`,
     the meeting wanted, whose rows the caller checks (horses or dogs)."""
     votes: dict[str, int] = {}
-    for i in range(3):
-        x, y, w, h = RACE_LIST_ROW
-        text = _ocr_bw(img, (x, y + i * RACE_LIST_PITCH, 130, h), '--psm 7', scale=3)
+    x, y, w, h = RACE_LIST_ROW
+    # The first three labels in one read (one read each took three times as long, on every runner list)
+    texts = [t for t in _ocr_bw(img, (x, y, 130, 3 * RACE_LIST_PITCH), '--psm 6', scale=3).splitlines() if t.strip()]
+    if len(texts) < 2:  # not read as rows: one at a time, as before
+        texts = [_ocr_bw(img, (x, y + i * RACE_LIST_PITCH, 130, h), '--psm 7', scale=3) for i in range(3)]
+    for text in texts[:3]:
         # Betty's label starts with a capital ('Shef 6:58'); the list's left border can read as a stray 'i' before it
         cap = re.search(r'[A-Z][A-Za-z]{2,3}', text)
         word = (cap.group(0) if cap else re.sub(r'[^A-Za-z]', '', text)).lower()[:4]
@@ -5417,15 +5477,18 @@ def runner_list_top_by_content(img: Any, meeting: str, hhmm: str, candidates: li
     the card when it positively isn't, None when the rows can't say. Any race lower down that is the wanted one also
     says the top isn't. Never guesses the wanted race is on top: 'right' past it is what 9.2458229 lost.
     """
-    rows = [r for r in race_list_rows(img) if r['time'] == clock_12h(hhmm)]
-    if not rows or rows[0]['row'] > 1:  # the first rows unread: the top race isn't known
-        return None
-    blocks = runner_list_races(rows)
     races = _feed_races_at(hhmm)
-    top, card_race = _race_is_wanted(blocks[0], meeting, candidates, races, want_dogs, want_virtual)
-    if top is None and any(_race_is_wanted(b, meeting, candidates, races, want_dogs, want_virtual)[0]
-                           for b in blocks[1:]):
-        top = False
+    for n_rows in (RACE_LIST_ROWS // 2, RACE_LIST_ROWS):  # the top half first; all of it only when that can't say
+        rows = [r for r in race_list_rows(img, n_rows) if r['time'] == clock_12h(hhmm)]
+        if not rows or rows[0]['row'] > 1:  # the first rows unread: the top race isn't known
+            return None
+        blocks = runner_list_races(rows)
+        top, card_race = _race_is_wanted(blocks[0], meeting, candidates, races, want_dogs, want_virtual)
+        if top is None and any(_race_is_wanted(b, meeting, candidates, races, want_dogs, want_virtual)[0]
+                               for b in blocks[1:]):
+            top = False
+        if top is not None:
+            break
     if top is None:
         return None
     kind = _common([r['trap'] for r in blocks[0]])
@@ -5437,14 +5500,6 @@ def runner_list_top_by_content(img: Any, meeting: str, hhmm: str, candidates: li
     named = label and nearest_meeting_label(label, candidates)
     return named or (f"'{label.title()}' (not on Betty's card)" if label else "another race")
 
-
-def _top_reads_agree(by_label: str | None, by_rows: str | None, meeting: str) -> str | None:
-    """The two reads of the top race together: either alone, or both when they agree on whether it is `meeting`."""
-    if by_label is None or by_rows is None:
-        return by_rows or by_label
-    if (by_label == meeting) != (by_rows in (meeting, f"{meeting} dogs", f"{meeting} horses")):
-        return None  # one says it's the wanted race and the other that it isn't: read again
-    return by_rows
 
 def _times_12h_apart(time_hhmm: str) -> set[str]:
     """The time and the time 12 hours from it: Betty's runner list is on a 12-hour clock."""
@@ -5523,11 +5578,15 @@ def answer_price_box():
         raise WagerForStaff("the price check box stayed open after 'Override with entered price'")
 
 
-def answer_entry_popups(max_rounds: int = 3):
+POPUP_WAIT_SECS = 0.4        # how long a box is looked for after a step that can open one
+POPUP_WAIT_AFTER_ADD = 0.1   # after adding a selection: the betslip read that follows answers a box opening later
+
+
+def answer_entry_popups(max_rounds: int = 3, wait: float = POPUP_WAIT_SECS):
     """After adding a runner: the price box -> price when struck, else Override (answer_price_box); a late selection
-    -> Yes (void processing)."""
+    -> Yes (void processing). `wait`: how long the first box is looked for."""
     for _ in range(max_rounds):
-        screen = wait_for_screen(set(MODAL_SIGNATURES), timeout=0.4)
+        screen = wait_for_screen(set(MODAL_SIGNATURES), timeout=wait)
         if screen == MODAL_PRICE:
             answer_price_box()
         elif screen == MODAL_LATE_SELECTION:
@@ -5703,9 +5762,12 @@ def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: 
     while True:
         _check_stop()
         shot = pyautogui.screenshot()
-        top = _top_reads_agree(top_meeting_in_race_list(shot, candidates, prefer=meeting),
-                               runner_list_top_by_content(shot, meeting, hhmm, candidates, want_dogs, want_virtual),
-                               meeting)
+        # The label first (one read); the runners (a slower read) only when the label doesn't name a meeting on the
+        # card (user, 31 Oct: speed). A label read as the wrong race is still caught: the betslip line after the
+        # number is checked against the card.
+        top = top_meeting_in_race_list(shot, candidates, prefer=meeting)
+        if not top:
+            top = runner_list_top_by_content(shot, meeting, hhmm, candidates, want_dogs, want_virtual)
         if top or time.time() - t_read > reread_secs:
             break
         time.sleep(0.1)
@@ -5728,12 +5790,13 @@ def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: 
 
 
 def runner_list_signature(img: Any) -> tuple:
-    """What heads the runner list: the top race's label, kind and first runners (numbers and names), read from the
-    whole columns. It differs whenever another race comes to the top; () when the first rows don't read."""
-    rows = race_list_rows(img)
-    if not rows or rows[0]['row'] > 1:
-        return ()
-    return tuple((r['label'], r['trap'], r['number'], _letters(r['name'])[:6]) for r in runner_list_races(rows)[0][:3])
+    """What heads the runner list: its first rows as read (meeting, time, runner), letters only. It differs whenever
+    another race comes to the top; () when the first rows don't read."""
+    # One read across the meeting and runner columns of the first rows (both columns over all 17 rows took ~0.7 s, on
+    # every 'right' and while waiting for it): what heads the list has changed when this text has
+    x0, x1 = RACE_LIST_LABEL_COL[0], RACE_LIST_NAME_COL[0] + RACE_LIST_NAME_COL[1]
+    text = _ocr_bw(img, (x0, RACE_LIST_ROW[1], x1 - x0, RACE_LIST_TOP_ROWS * RACE_LIST_PITCH), '--psm 6', 2)
+    return tuple(t for t in (_letters(line)[:24] for line in text.splitlines()) if len(t) >= 6)
 
 
 def _next_runner_list(prev_top: str | None, meeting: str, candidates: list[str], prev_sig: tuple = ()) -> str:
@@ -5768,10 +5831,30 @@ def _next_runner_list(prev_top: str | None, meeting: str, candidates: list[str],
         time.sleep(0.02)
 
 
+def read_betslip_tail(img: Any, n: int = 2) -> list[dict]:
+    """
+    The betslip's last `n` lines read (the rows holding a line found by colour first, down to the first blank one):
+    enough to check the line just added and how many there are (betslip_count with the screen). The whole betslip,
+    read on every poll after each selection, cost 0.8-1.7 s (user, 31 Oct: speed).
+    """
+    arr, left = np.array(img.convert('RGB')), betslip_left(img)
+    rows = betslip_rows_with_text(img)
+    full = bool(rows) and rows[-1] == BETSLIP_MAX_LINES - 1
+    out = [line for line in (read_betslip_row(img, r, arr, left) for r in rows[-n:]) if line]
+    for line in out:
+        line['panel_full'] = full
+    hidden = _betslip_offset(out)
+    for line in out:
+        if line['n'] is None:
+            line['n'] = hidden + line['row'] + 1
+    return out
+
+
 def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
     """
-    The betslip lines once one more selection than `already_on_slip` shows, or the last read after NAV_TIMEOUT. A box
-    that opens late (after answer_entry_popups stopped looking) is answered here; the betslip under it isn't read.
+    The betslip's last lines once one more selection than `already_on_slip` shows, or the last read after
+    NAV_TIMEOUT. A box that opens late (after answer_entry_popups stopped looking) is answered here; the betslip
+    under it isn't read. Only the last lines are read (read_betslip_tail): the new one, and one above it.
     """
     t0 = time.time()
     while True:
@@ -5779,7 +5862,7 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
         img = pyautogui.screenshot()
         arr = np.array(img.convert('RGB'))
         box_open = any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values())
-        lines = [] if box_open else read_betslip_selections(img)
+        lines = [] if box_open else read_betslip_tail(img)
         if betslip_count(lines, None if box_open else img) > already_on_slip or time.time() - t0 > NAV_TIMEOUT:
             return lines
         if box_open:
@@ -5789,7 +5872,7 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
 
 
 def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = False, after_same_time: bool = False,
-                    entered_before: bool = False):
+                    entered_before: bool = False, entered_order: tuple[int, int] | None = None):
     """
     Adds one locked selection to the current betting slip and confirms it on the betslip read-back. After a selection
     in the same race (`after_same_race`), it is chosen from the runner list still showing, with no time typed again
@@ -5799,7 +5882,8 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
     the time is typed after all. A selection already entered on an earlier slip of this wager (`entered_before`) is
     taken from the previous-selections panel (enter_from_reuse_panel), else entered the usual way.
     """
-    if entered_before and not horse.get('void') and enter_from_reuse_panel(horse, already_on_slip):
+    order, n_entered = entered_order or (None, None)
+    if entered_before and not horse.get('void') and enter_from_reuse_panel(horse, already_on_slip, order, n_entered):
         return None
     if horse.get('favourite'):
         return enter_favourite(horse, already_on_slip)
@@ -5886,7 +5970,7 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
         _type_text(str(int(number)))
         betty_press('add' if takes_price else 'enter')
         print(f"[*] Added {label} with {'numpad + (price)' if takes_price else 'Enter (SP)'}.")
-    answer_entry_popups()
+    answer_entry_popups(wait=POPUP_WAIT_AFTER_ADD)  # a box opening later is answered by the betslip read
 
     got = check_new_betslip_line(_read_new_betslip_line(already_on_slip), already_on_slip, label)
     if takes_price and got['price'].upper() == 'SP':  # user's rule: a price taken but none on Betty yet -> staff
@@ -6097,12 +6181,12 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
         print(f"[*] Best odds guaranteed: none needed ({why}).")
         return
     img = pyautogui.screenshot()
-    lines = read_betslip_selections(img)
+    lines = read_betslip_tail(img)
     if betslip_count(lines, img) != len(horses):
         raise WagerForStaff(f"the betslip shows {betslip_count(lines, img)} selection(s) before guaranteeing, "
                             f"expected {len(horses)}")
     left = betslip_left(img)
-    known = dict(betslip_lines_by_number(lines))
+    known = dict(betslip_lines_by_number(lines))  # the rest are read as they're brought into view
     price_box = MODAL_SIGNATURES[MODAL_PRICE]['colours']
     boxes = [sig['colours'] for sig in MODAL_SIGNATURES.values()]
     refresh_watcher_hud(f"Best odds guaranteed: {len(wanted)} selection(s)...")
@@ -6293,16 +6377,12 @@ _f8_trail: list[str] = []  # keys sent on Choose Bet and Stake for the bet in ha
 
 def _f8_key(key: str):
     """
-    A key on Choose Bet and Stake, noting whether Betty still shows it just after (colours only, no OCR). Only for the
-    log: 9.2458229 (30 Oct) and 9.2455944 (28 Oct) went to Home after F8 and nothing said which key did it.
+    A key on Choose Bet and Stake, kept in the trail the log prints if Betty leaves that screen (9.2458229, 30 Oct and
+    9.2455944, 28 Oct went to Home after F8 and nothing said after which keys). Betty buffers keys, so none waits;
+    a screenshot after each one (13 or so a bet) is gone too (user, 31 Oct: speed).
     """
     betty_press(key)
-    try:
-        arr = np.array(pyautogui.screenshot().convert('RGB'))
-        still = _signals_pass(arr, SCREEN_SIGNATURES[SCREEN_BET_AND_STAKE]['colours'])
-    except Exception:  # a screenshot that can't be read changes nothing here
-        still = True
-    _f8_trail.append(key if still else f"{key} (screen gone)")
+    _f8_trail.append(key)
 
 
 def _left_f8(screen: str, doing: str) -> Exception:
@@ -6360,15 +6440,13 @@ def choose_bet_type(canon: str, extending: bool = False):
             return
 
     if key:
-        _f8_key(key)
-        time.sleep(0.08)
+        _f8_key(key)  # buffered: the bet list read below waits for its green
     for page in range(5):
         i, rows = _find_bet_row(canon)
         if i is not None:
             break
         print(f"[*] '{canon}' isn't on this page of the bet list: PgDn.")
         _f8_key('pagedown')  # the list pages round; bet types depend on the selections entered
-        time.sleep(0.08)
         screen = detect_screen()
         if screen != SCREEN_BET_AND_STAKE:
             raise _left_f8(screen, f"after PgDn while choosing '{canon}'")
@@ -6420,21 +6498,18 @@ def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None 
     if n_bets > 1:
         print(f"[*] {n_bets} x {canon} at {stake}p: entered as 1 {canon} at {stake * n_bets}p.")
         stake *= n_bets
+    # Keys only, all buffered by Betty (user, 31 Oct): no waits between them. A bet starts at Win Only, so only an each
+    # way bet presses E (user, 31 Oct: the each-way button isn't read first). Betty's total against Payment, before
+    # F12, still catches a bet gone in the wrong way.
     if bets_before > 0:
-        time.sleep(0.15)
         for _ in range(STAKE_BOX_DIGITS):
             betty_press('backspace')
-            time.sleep(0.01)
     for ch in str(stake):
         _f8_key(ch)
     _f8_key('enter')
-    time.sleep(0.1)  # the each-way button is drawn after Enter (review R18)
-    arr = np.array(pyautogui.screenshot().convert('RGB'))
-    ew_on = _colour_share(arr, F8_EACH_WAY_BOX, F8_ROW_GREEN) >= 0.4
-    if bool(bet.get('each_way')) != ew_on:
-        _f8_key('e' if bet.get('each_way') else 'w')
+    if bet.get('each_way'):
+        _f8_key('e')
     choose_bet_type(canon, extending=bets_before > 0)
-    time.sleep(0.15)
     ew_str = 'Each Way' if bet.get('each_way') else 'Win Only'
     print(f"[+] Bet {bet_no or bets_before + 1} entered: {canon}, {ew_str} @ {stake}p.")
 
@@ -6591,17 +6666,19 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
         raise WagerForStaff(f"bet type(s) the program can't enter yet: {', '.join(missing)}")
     focus_betty()  # a staff dialog may just have closed: keys must reach Betty, not the console
     bets_on_slip = 0
-    entered: set[tuple] = set()  # selections entered on this wager's earlier slips (the previous-selections panel)
+    entered: list[tuple] = []  # selections entered on this wager's earlier slips, in order (the previous-selections panel)
     for idx, (bet, canon) in enumerate(plan):
         assert canon is not None
         if not (idx and same_selections(bet, plan[idx - 1][0])):
             horses = bet.get('horses', [])
             for k, horse in enumerate(horses):
                 after_race = k > 0 and same_race(horse, horses[k - 1])
+                key = selection_key(horse)
                 enter_selection(horse, k, after_same_race=after_race,
                                 after_same_time=k > 0 and not after_race and same_race_time(horse, horses[k - 1]),
-                                entered_before=selection_key(horse) in entered)
-            entered.update(selection_key(h) for h in horses)
+                                entered_before=key in entered,
+                                entered_order=(entered.index(key), len(entered)) if key in entered else None)
+            entered += [selection_key(h) for h in horses if selection_key(h) not in entered]
             apply_guarantees(bet.get('horses', []), struck_clock)
             # No whole-betslip re-read here (user, 26 Oct): every line was read back as it was entered and every
             # guarantee confirmed by its colour; the re-read failed on good slips (9.2452710). Payment is checked at F12.
@@ -6617,8 +6694,7 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
         if idx < len(plan) - 1:
             if same_selections(plan[idx + 1][0], bet):
                 _f8_trail.clear()
-                _f8_key('f11')  # extend: same selections, next bet type
-                time.sleep(0.2)
+                _f8_key('f11')  # extend: same selections, next bet type (buffered: its stake keys follow at once)
             else:
                 betty_press('f10')  # new betting slip
                 expect_screen({SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY}, doing="new betting slip (F10)")
