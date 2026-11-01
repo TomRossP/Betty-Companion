@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.13] - 2026-11-01
+
+The previous-selections panel (right-click on the slip image) never worked live: every try said it "didn't show" and typed the selection instead (9.2460806 at 13:56-13:57, 9.2460882 at 14:02, the user's recording of 14:01). It opened every time. Its rows are white when the selection is on the slip being entered already and cyan when it isn't, and a red line runs only above and below them all, not between rows. The program looked for white rows each between two red lines, taken from screen 15 alone (one row, The Favourite, on its slip), so it could only find rows that didn't need adding. 1.2.0 looked for the same white row at y 286.
+
+### Fixed
+- **The panel's rows are found by their shape** (`_reuse_row_boxes`): a red line across the panel above the rows and one below, red column borders at x 5, 137, 311 and 399 the whole way down, and a whole number of 35 px rows between. Found on all 6 saved panels (15, and 52-56 from today's logs), 1 to 3 rows, and on none of the other 98 saved Betty screens.
+- **Betty showing the panel is named as such** (`detect_screen`, by the same shape): 1.2.12 named today's panels RACE_ENTRY.
+- **A white row is never clicked** (`find_reuse_row`): its selection is on the slip already, and a click would add it twice. The log marks it `(on this slip)`.
+
+### Added
+- Screens 52-56 (today's panels) in `scratch/betty_screens`, in `test_reuse_panel.py` (rows read, white or not, which row each selection is, the price clicked at its row on a real screen) and `screen_cases.py`; `test_screens_golden.py` records the panel's rows. `live_report.py` warns when a previous selection was typed because the panel wasn't seen.
+
 ## [1.2.12] - 2026-11-01
 
 Betty going Home on Choose Bet and Stake (the reversed forecast 9.2459992 on 31 Oct, the Lucky 15 9.2460715 today, on every version from 1.2.1) was a Tesseract window taking the keyboard from Betty, not the keys or their pace. The user's recordings of 1.2.0 and 1.2.11 entering 9.2460715 (13:08, 13:18) show the same keys, `f8, 1, 0, 0, enter, l`. On 1.2.11, 0.3 s after 'l', the taskbar comes up and a `tesseract.exe` console opens over Betty, and 0.7 s later Betty puts 'A-Bet System' in front of its bet edit. `scratch/focus_monitor.log` has it too: a tesseract.exe console took the keyboard at 13:19:47.6 and Home followed at 13:19:48.3, and a console took it once on every start of the program this morning.

@@ -1,4 +1,4 @@
-__version__ = "1.2.12"
+__version__ = "1.2.13"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -3829,12 +3829,10 @@ SCREEN_SIGNATURES = {
         'absent': [_REUSE_PANEL_WHITE],
         'label': ((5, 630, 80, 50), ("master", "index")),
     },
-    SCREEN_REUSE_PANEL: {  # right-click on the slip image: earlier selections listed on the left, white rows
+    SCREEN_REUSE_PANEL: {  # right-click on the slip image: earlier selections listed on the left. Its rows are white
+        # or cyan, so detect_screen tells it by their shape (reuse_panel_open) on top of these, not by a colour
         'colours': [((8, 110, 205, 35), (193, 0, 0), 0.5),          # red meeting-list header
-                    ((10, 292, 120, 24), (255, 255, 255), 0.7),     # white first selection row
-                    _REUSE_PANEL_WHITE,
                     ((940, 634, 80, 110), (0, 128, 0), 0.5)],       # dark green Cancel Bet
-        'label': ((5, 290, 128, 28), ()),                            # first row reads "Meet H:MM"
     },
     SCREEN_RACE_LIST: {  # runners listed after a time is typed (hatched when no prices are in yet)
         'colours': [_CHOOSE_BET_BUTTON,
@@ -3944,8 +3942,12 @@ def detect_screen(img: Any = None) -> str:
     for name, sig in MODAL_SIGNATURES.items():
         if _signals_pass(arr, sig['colours']) and _label_reads(img, *sig['label']):
             return name
-    matches = [name for name, sig in SCREEN_SIGNATURES.items()
-               if _signals_pass(arr, sig['colours']) and _signals_absent(arr, sig.get('absent', []))]
+    # The previous-selections panel by its rows' shape: they were taken as white, and 1.2.1-1.2.12 named the cyan
+    # ones (selections not on the slip yet) RACE_ENTRY (screens 52-56)
+    if _signals_pass(arr, SCREEN_SIGNATURES[SCREEN_REUSE_PANEL]['colours']) and reuse_panel_open(img):
+        return SCREEN_REUSE_PANEL
+    matches = [name for name, sig in SCREEN_SIGNATURES.items() if name != SCREEN_REUSE_PANEL
+               and _signals_pass(arr, sig['colours']) and _signals_absent(arr, sig.get('absent', []))]
     if len(matches) != 1:
         return SCREEN_UNKNOWN
     name = matches[0]
@@ -5221,28 +5223,38 @@ def find_runner_row(img: Any, horse: dict, candidates: list[str]) -> dict | None
 # --- The previous-selections ("reuse") panel. Right-click on the slip image lists every selection already entered on
 # this wager, all its slips, and stays open; a row's price takes the price, its name SP, as on the runner list (user,
 # 31 Oct). Folder favourites can be reused; Master Index entries crash Betty, and the program never makes any.
-# Rows ('Harl 10:32 | The Favourite | price') are 36 px apart from y = 286, in the runner list's columns (screen 15).
-REUSE_PANEL_X = (5, 400)      # the panel's width (screen 15: borders at x 5, 137, 311, 399)
-REUSE_ROW_H = (28, 46)        # a row's height between its red borders (36 on screen 15)
+# Rows ('Harl 10:32 | The Favourite | price') are 35 px apart from y = 286, in the runner list's columns. A row is
+# white when that selection is on the slip being entered and cyan when it isn't (screens 15, 52-56).
+REUSE_PANEL_X = (5, 400)      # the panel's width
+REUSE_PANEL_COLS = (5, 137, 311, 399)  # its red column borders, top to bottom of the rows (screens 15, 52-56)
+REUSE_ROW_PITCH = 35          # a row and its border: the rows' top and bottom lines are 36 / 71 / 106 px apart
+REUSE_ROWS_MAX = 9            # rows above the folder buttons
 SLIP_IMAGE_SPOT = (SLIP_REGION[0] + SLIP_REGION[2] // 2, SLIP_REGION[1] + SLIP_REGION[3] // 2)  # right-clicked
 REUSE_SHOTS_KEPT = 10         # pictures of the panel kept in logs/ when it couldn't be used
 
 
 def _reuse_row_boxes(img: Any) -> list[tuple[int, int]]:
     """
-    The panel's rows wherever it opens, by colour: thin red lines right across its width (a row's top and bottom
-    borders) with white between them. It was looked for only at y = 286 (screen 15), so where it opened anywhere else
-    it wasn't seen: a 4 s wait, then the time typed after all (cashier till, 31 Oct). No other screen of Betty's has
-    white rows between such lines (screens 04, 10, 17, 19, 20, 37, 43, 45 checked).
+    The panel's rows wherever it opens, by their shape: a red line right across the panel above the rows and one
+    below (none between them), red column borders the whole way down, and a whole number of 35 px rows between.
+    1.2.1-1.2.12 took a row as white between its own two red lines, from screen 15 alone (one row, on the slip), so
+    the cyan rows of selections not yet on the slip, the ones to add, were never seen: the panel never worked live
+    (9.2460806, 9.2460882, 1 Nov: 'didn't show', the selection typed). Found on screens 15 and 52-56 only, of 104.
     """
-    a = np.array(img.convert('RGB')).astype(int)
-    x0, x1 = REUSE_PANEL_X
-    red = (a[:, x0:x1, 0] > 200) & (a[:, x0:x1, 1] < 70) & (a[:, x0:x1, 2] < 70)
-    share = red.mean(axis=1)
-    lines = [y for y in range(60, min(len(share) - 3, 625)) if share[y] >= 0.8 and share[y - 3] < 0.5 and share[y + 3] < 0.5]
-    white = a[:, :, :3].min(axis=2) > 235
-    return [(y0, y1) for y0, y1 in zip(lines, lines[1:])
-            if REUSE_ROW_H[0] <= y1 - y0 <= REUSE_ROW_H[1] and white[y0 + 4:y1 - 3, 10:130].mean() >= 0.5]
+    a = np.array(img.convert('RGB').crop((0, 0, REUSE_PANEL_X[1] + 10, 630))).astype(np.int16)
+    red = (a[:, :, 0] > 200) & (a[:, :, 1] < 70) & (a[:, :, 2] < 70)
+    share = red[:, REUSE_PANEL_X[0]:REUSE_PANEL_X[1]].mean(axis=1)
+    lines = [y for y in range(60, len(share) - 3) if share[y] >= 0.8 and share[y - 3] < 0.5 and share[y + 3] < 0.5]
+    boxes = []
+    for y0, y1 in zip(lines, lines[1:]):
+        n = round((y1 - y0 - 1) / REUSE_ROW_PITCH)
+        if not 1 <= n <= REUSE_ROWS_MAX or abs(y1 - y0 - 1 - n * REUSE_ROW_PITCH) > 3:
+            continue
+        if not all(red[y0 + 2:y1 - 1, x - 1:x + 2].any(axis=1).mean() >= 0.9 for x in REUSE_PANEL_COLS):
+            continue
+        h = (y1 - y0) / n
+        boxes += [(round(y0 + k * h), round(y0 + (k + 1) * h)) for k in range(n)]
+    return boxes
 
 
 def reuse_panel_open(img: Any) -> bool:
@@ -5251,19 +5263,23 @@ def reuse_panel_open(img: Any) -> bool:
 
 
 def reuse_panel_rows(img: Any) -> list[dict]:
-    """The panel's rows, top first: [{'row', 'label', 'time', 'name', 'y', 'unread'}] ('name' without a cloth / trap
-    number). A row whose meeting and time don't read is kept, marked 'unread': its place still counts."""
+    """The panel's rows, top first: [{'row', 'label', 'time', 'name', 'y', 'unread', 'on_slip'}] ('name' without a
+    cloth / trap number). A row whose meeting and time don't read is kept, marked 'unread': its place still counts.
+    'on_slip': the row is white, the selection is on the slip being entered already."""
     rows = []
+    arr = np.array(img.convert('RGB'))
     for k, (y0, y1) in enumerate(_reuse_row_boxes(img)):
         h = y1 - y0
         label = _ocr_bw(img, (RACE_LIST_LABEL_COL[0] + 3, y0 + 3, RACE_LIST_LABEL_COL[1] - 6, h - 6), '--psm 7', 3)
         name = _ocr_bw(img, (RACE_LIST_NAME_COL[0] + 2, y0 + 3, RACE_LIST_NAME_COL[1] - 6, h - 6), '--psm 7', 3)
         m_time = re.search(r'(\d{1,2})[:.](\d{2})', label)
         cap = re.search(r'[A-Z][A-Za-z]{2,3}', label)
+        on_slip = _colour_share(arr, (10, y0 + 3, 120, 4), (255, 255, 255), 20) >= 0.8  # above the text: its colour
         rows.append({'row': k, 'label': cap.group(0).lower() if cap else '',
                      'time': f"{int(m_time.group(1))}:{m_time.group(2)}" if m_time else '',
                      'name': re.sub(r'^\W*(?:trap\s*)?\d{1,2}\s*[.,]\s*', '', name, flags=re.I).strip(),
-                     'y': (y0 + y1) // 2, 'unread': not (m_time and cap), 'text': f"{label} | {name}"})
+                     'y': (y0 + y1) // 2, 'unread': not (m_time and cap), 'on_slip': on_slip,
+                     'text': f"{label} | {name}{' (on this slip)' if on_slip else ''}"})
     return rows
 
 
@@ -5292,11 +5308,12 @@ def find_reuse_row(rows: list[dict], horse: dict, order: int | None = None, ente
     The panel row that is this selection: its meeting's label (a letter out at most), time and name as far as Betty
     shows it ('The Favourite' for the favourite). When none reads as it but the panel lists exactly the selections
     entered (`entered` rows, in the order entered) and the row at its place (`order`) didn't read, that row: its place
-    says it (the betslip check after the click still decides). None when no row fits.
+    says it (the betslip check after the click still decides). None when no row fits. A white row is on the slip
+    already and is never the one: a click would add it twice.
     """
     want_label, want_time = betty_meeting_abbrev(horse.get('meeting', '')), clock_12h(str(horse.get('time', '')))
     for row in rows:
-        if row.get('unread'):
+        if row.get('unread') or row.get('on_slip'):
             continue
         if row['time'] != want_time or _letters_off(row['label'], want_label) > 1:
             continue
@@ -5307,7 +5324,7 @@ def find_reuse_row(rows: list[dict], horse: dict, order: int | None = None, ente
         elif len(shown) >= 3 and name_similarity(shown, _letters(horse.get('name'))[:len(shown)]) >= 0.75:
             return row
     if order is not None and entered is not None and len(rows) == entered and 0 <= order < len(rows) \
-            and rows[order].get('unread'):
+            and rows[order].get('unread') and not rows[order].get('on_slip'):
         return dict(rows[order], by_place=True)
     return None
 
