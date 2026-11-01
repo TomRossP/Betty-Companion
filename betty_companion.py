@@ -1,4 +1,4 @@
-__version__ = "1.2.11"
+__version__ = "1.2.12"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -10,7 +10,7 @@ import os
 import queue
 import math
 import itertools
-from collections import Counter
+from collections import Counter, deque
 from dotenv import load_dotenv
 import app_paths
 import lessons
@@ -25,6 +25,7 @@ import io
 import json
 import requests
 import ctypes
+import subprocess
 import sys
 import tkinter as tk
 import threading
@@ -229,8 +230,31 @@ def get_screen_resolution() -> tuple[int, int]:
 
 # --- 1. ENGINE SETUP ---
 TESSERACT_EXE = app_paths.find_tesseract()  # shipped with the program first, then an installed one
+
+
+def _ask_tesseract_version_hidden():
+    """
+    pytesseract asks tesseract.exe its version once a run, on the first image_to_data, and that is its one run of
+    tesseract.exe it doesn't hide. The console window took the keyboard from Betty 0.3 s after 'l' on Choose Bet and
+    Stake, and Betty put Home in front of its bet edit 0.7 s later (recording of 9.2460715, 1 Nov; the forecasts that
+    went Home on 1.2.1-1.2.11 the same way). 1.2.0's first image_to_data was on the runner list, where it did no harm;
+    1.2.1's quicker reads left the bet list as the first. Asked here, hidden, before Betty is touched: pytesseract
+    keeps the answer for the rest of the run.
+    """
+    check_output = subprocess.check_output
+    subprocess.check_output = lambda *a, **k: check_output(*a, creationflags=subprocess.CREATE_NO_WINDOW, **k)
+    try:
+        pytesseract.get_tesseract_version()
+    except (Exception, SystemExit) as e:  # pytesseract exits on a version it can't read
+        print(f"[-] Tesseract's version could not be asked ({e}): its window may open over Betty once, on the first "
+              "read of a list.")
+    finally:
+        subprocess.check_output = check_output
+
+
 if TESSERACT_EXE:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_EXE
+    _ask_tesseract_version_hidden()
 else:
     print(f"[-] Tesseract not found (no tesseract\\ folder next to the program, nor {app_paths.INSTALLED_TESSERACT}): "
           "screens can't be read.")
@@ -6428,6 +6452,8 @@ _f8_trail: list[str] = []  # keys sent on Choose Bet and Stake for the bet in ha
 # on that screen on every try of 1.2.1-1.2.7; 1.2.0 entered it, and so did the user by hand (31 Oct, 1 Nov). Putting
 # back only some of the waits (1.2.3-1.2.5) didn't do it. 1.2.10: a second after the stake and after the bet type
 # (F8_AFTER_STAKE_SECS, F8_AFTER_BET_TYPE_SECS). Keep this stretch as it is unless a change is tried live.
+# 1.2.12: the cause wasn't the keys or their pace but a tesseract.exe console taking the keyboard from Betty just
+# after the bet shortcut (_ask_tesseract_version_hidden). The 1.2.10 waits come out once 1.2.12 is proven live.
 def _f8_key(key: str):
     """
     A key on Choose Bet and Stake, noting whether Betty still shows it just after (colours only, no OCR). Only for the
@@ -6723,6 +6749,61 @@ def betty_windows_report() -> str:
         return "; ".join(found) or "none open"
     except Exception as e:
         return f"could not be listed ({e})"
+
+
+class ForegroundLog:
+    """
+    Every window that takes the keyboard, from any program, with the time, for the log when a wager goes to staff.
+    betty_windows_report lists only Betty's windows and the F8 recorder looked ten times a second, so neither showed
+    the tesseract.exe console that had the keyboard for a moment before Betty went Home (1 Nov). Windows calls in as
+    it happens (a WinEvent hook, out of context): looks only, nothing is pressed, clicked or polled.
+    """
+    SECS = 30  # looked back on a staff reason: the slowest reasons come ~5 s after what caused them
+
+    def __init__(self):
+        self._events: deque = deque(maxlen=200)
+        self._proc = None  # Windows' callback, kept alive while the hook is
+        self._started = False
+
+    def start(self):
+        if self._started or os.environ.get("BETTY_HEADLESS") == "1":
+            return
+        self._started = True
+        threading.Thread(target=self._run, name="foreground log", daemon=True).start()
+
+    def _run(self):
+        import ctypes.wintypes as wt
+        user32 = ctypes.windll.user32
+        proc_type = ctypes.WINFUNCTYPE(None, wt.HANDLE, wt.DWORD, wt.HWND, wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)
+        user32.SetWinEventHook.restype = wt.HANDLE
+        user32.SetWinEventHook.argtypes = [wt.DWORD, wt.DWORD, wt.HMODULE, proc_type, wt.DWORD, wt.DWORD, wt.DWORD]
+
+        def on_foreground(_hook, _event, hwnd, *_):
+            try:
+                title = ctypes.create_unicode_buffer(120)
+                user32.GetWindowTextW(hwnd, title, 120)
+                self._events.append((time.time(), window_exe(hwnd), title.value))
+            except Exception:
+                pass
+
+        self._proc = proc_type(on_foreground)
+        if not user32.SetWinEventHook(0x0003, 0x0003, None, self._proc, 0, 0, 0):  # EVENT_SYSTEM_FOREGROUND
+            print("[-] Windows taking the keyboard won't be in the log (the hook was refused).")
+            return
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:  # the hook's calls come through here
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    def others(self) -> str:
+        """Other programs' windows that had the keyboard in the last SECS seconds, oldest first; 'none'."""
+        now = time.time()
+        seen = [f"{exe or '?'} '{title or 'untitled'}' {now - t:.1f} s ago" for t, exe, title in list(self._events)
+                if now - t <= self.SECS and exe != BETTY_EXE]
+        return "; ".join(seen) or "none"
+
+
+FOREGROUND_LOG = ForegroundLog()
 
 
 class F8Recorder:
@@ -7331,6 +7412,9 @@ def leave_wager_for_staff(number: str, reason: str):
     """
     _wagers_left_for_staff.add(number)
     print(f"[!] Wager {number} needs staff: {reason}")
+    if os.environ.get("BETTY_HEADLESS") != "1":
+        print(f"[*] Other programs' windows with the keyboard in the last {ForegroundLog.SECS} s: "
+              f"{FOREGROUND_LOG.others()}")
     corpus_outcome(number, "staff", reason)
     shot = save_staff_screenshot(number)
     _lessons_outcome(placed=False)
@@ -7650,6 +7734,7 @@ def main():
     keyboard.add_hotkey('`', toggle_watcher, suppress=True)
     keyboard.add_hotkey('shift+`', toggle_test_mode, suppress=True)
     HumanInputMonitor(on_staff_input).start()
+    FOREGROUND_LOG.start()
     threading.Thread(target=watcher_loop, daemon=True).start()
     threading.Thread(target=lesson_sync_loop, name="lessons", daemon=True).start()
     refresh_watcher_hud()

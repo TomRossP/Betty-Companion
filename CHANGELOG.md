@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.12] - 2026-11-01
+
+Betty going Home on Choose Bet and Stake (the reversed forecast 9.2459992 on 31 Oct, the Lucky 15 9.2460715 today, on every version from 1.2.1) was a Tesseract window taking the keyboard from Betty, not the keys or their pace. The user's recordings of 1.2.0 and 1.2.11 entering 9.2460715 (13:08, 13:18) show the same keys, `f8, 1, 0, 0, enter, l`. On 1.2.11, 0.3 s after 'l', the taskbar comes up and a `tesseract.exe` console opens over Betty, and 0.7 s later Betty puts 'A-Bet System' in front of its bet edit. `scratch/focus_monitor.log` has it too: a tesseract.exe console took the keyboard at 13:19:47.6 and Home followed at 13:19:48.3, and a console took it once on every start of the program this morning.
+
+1.2.2-1.2.10's waits were for the wrong cause: the stake box shows '100' until the bet key on 1.2.0 as well, and 1.2.11 waited longer than 1.2.0 and still went Home. They stay in 1.2.12 and come out in 1.2.13, once 1.2.12 has entered wagers live, so any change in behaviour is known to be this one.
+
+### Fixed
+- **Tesseract's version is asked on starting, hidden** (`_ask_tesseract_version_hidden`). pytesseract asks it once a run, on the first `image_to_data`, and that is the one run of tesseract.exe it doesn't hide. 1.2.0's first `image_to_data` was on the first runner list, where the window did no harm (one frame of the 1.2.0 recording, at 41.5 s); 1.2.1's quicker runner-list reads left the bet list's read, 0.08 s after the bet shortcut, as the first. Singles don't read the bet list, which is why they went in.
+
+### Added
+- **Other programs' windows in the log**: when a wager goes to staff, every window of another program that had the keyboard in the last 30 s (`ForegroundLog`, a Windows hook: looks only). `betty_windows_report` lists only Betty's windows and the F8 recorder looked 10 times a second, so neither showed the console.
+- `scratch/test_no_console_windows.py` (in `run_all_tests.py`): loads the program and reads a bet list and a runner list with no console, as the exe does, and checks that every tesseract.exe it starts is hidden and that Windows showed none; two controls show it catches 1.2.11's fault. `live_report.py` warns when another program had the keyboard before a staff reason.
+
 ## [1.2.11] - 2026-11-01
 
 The offline tests passed while the tills failed (user, 1 Nov): they stand in for Betty, which answers at once and always as expected, and they only had the screens already seen. Checks against the real Betty are added, and the tills now keep what they need for them.
