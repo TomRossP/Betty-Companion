@@ -4,6 +4,96 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.11] - 2026-11-01
+
+The offline tests passed while the tills failed (user, 1 Nov): they stand in for Betty, which answers at once and always as expected, and they only had the screens already seen. Checks against the real Betty are added, and the tills now keep what they need for them.
+
+### Added
+- **Live capture for the tests** (`corpus_save`, `corpus_outcome`): each decision taken from Betty's screen (the race on top of the runner list, the betslip line after each selection, the bet list's row, a wager's View Wagers details), with that screen, the inputs and the card at that time, and how each wager ended (placed, entered in test mode, staff). Kept in `logs\corpus\` (the newest 1500 pictures, ~90 KB each), written by a thread of its own: the till never waits for it (`corpus_save` returns in under a millisecond). `BETTY_CORPUS=0` turns it off. Looks only.
+- **Tests on real material** (in `scratch\`, not shipped):
+  - `test_live_corpus.py`: today's code on every captured decision. A decision on a wager that was placed and now decided otherwise is a failure; one on a wager that went to staff is listed as changed, for a person to label (`--label`).
+  - `test_screens_golden.py`: every screen reader on every saved Betty screen (91: `betty_screens` and `screen_corpus`, which now keeps every staff and panel picture from the logs before they're pruned) against the golden readings, with the time each took. It records the runner list's top-label decision too: run on 1.2.8's code it reads the Timberwell screen as nothing, where 1.2.0 and now read Timberwell.
+  - `live_report.py`: every wager in the session logs by version: placed, staff (the program's fault or the slip's), stopped, and warning signs (the edit going behind Home, the watcher backing out of an open edit, the slip not shown, the runner list's top unread, a betslip price other than the one written).
+  - `run_all_tests.py`: all of the above and the offline suites in one go, with a table.
+
+## [1.2.10] - 2026-11-01
+
+1.2.9 read Timberwell at 2:42 as it should (9.2460715, 11:40: "Runner list starts with Timberwell: 'right' to bring up Huntingdon"), entered all four selections and their guarantees, then stopped on Choose Bet and Stake as the forecast had: a Lucky 15, so not only forecasts (user, 1 Nov).
+
+### Changed
+- **A second after the stake and a second after the bet type** (user, 1 Nov): stake and Enter, 1 s (`F8_AFTER_STAKE_SECS`, was 0.1 s), the each-way button read and set, the bet type, 1 s (`F8_AFTER_BET_TYPE_SECS`, was 0.15 s), then F11, F10, or the total read and F12. About 1.75 s more a bet. Esc still stops it during either wait.
+
+## [1.2.9] - 2026-11-01
+
+Two of 1.2.8's three wagers this morning went to staff with "the meeting at the top of Betty's 2:42 runner list could not be read" (9.2460715, 9.2460730): Timberwell's 2:42 virtuals sat above Huntingdon 2:42. Every 1.2.1 reading change was then checked against 1.2.0's on all 92 saved Betty screenshots (`scratch/betty_screens`, the staff and panel pictures in `logs`): the betslip reads (whole and last-lines), the line counts and the runner rows all agree with 1.2.0; only the runner list's label read differs.
+
+### Fixed
+- **The runner list's top label is read row by row again when the one-pass read names no meeting** (`top_meeting_in_race_list`). 1.2.1's one read of the first three labels is 2.5x quicker (5.7 s against 14.4 s over the saved screens) and reads 'Donc', 'Newc' and 'Mill' where 1.2.0 read 'done', 'newe' and 'wav', but it can lose a label's first capital: 'Timb 2:42(v)' read 'imb' and named nothing, where 1.2.0's read named Timberwell. The quick read stays first; 1.2.0's read follows only when it names nothing.
+- `scratch/test_runner_list_top.py` has the Timberwell screen (`51_race_list_timb_virtuals_above_hunt_242.png`, with its card `card_1nov_1442.json`).
+
+## [1.2.8] - 2026-11-01
+
+Choose Bet and Stake (F8 through F10 / F11) is 1.2.0's code again. 9.2459992, a two-dog reversed forecast, went Home on that screen on every try of 1.2.1-1.2.6, and was entered by 1.2.0 and by the user by hand. The recording (`logs\f8_9.2459992_20261031_191852`) shows Betty took the stake at once (its summary changed in the frame after Enter) and stayed still until 'r'; from the frame after 'r' it redrew the bet list and stake panel twice, never chose Reversed Forecasts, and put 'A-Bet System' in front with both edit windows still open behind it. 1.2.7's account (Betty still busy with Enter for 0.93 s) doesn't fit those frames, and putting back only some of 1.2.0's waits (1.2.3-1.2.5) didn't work, so the whole stretch is 1.2.0's.
+
+### Changed
+- **Back to 1.2.0** on Choose Bet and Stake: a look at the screen after every key (the log marks a key after which Betty had gone: `r (screen gone)`), 0.1 s after Enter and the each-way button read and set (W or E), 0.08 s after the bet shortcut and after PgDn, 0.15 s after the bet type, 0.15 s before the backspaces and 0.01 s between them, 0.2 s after F11. No other wait before F8.
+- **Taken out:** 1.2.7's 0.95 s after Enter and its `focus_betty()` before the bet shortcut; 1.2.7's `betty_top_window` preferring any window not called 'A-Bet System' (it could bring a stale edit, or another of Betty's windows, over Home); 1.2.7's bringing an edit window back to the front when Home is seen (the program went on typing into a bet edit Betty had put behind Home); 1.2.5's 2 s before F8; 1.2.3's pacing constants.
+- **The F8 recording is off** unless `BETTY_F8_RECORD=1` is set: 1.2.0 had nothing else running on that screen.
+- Kept, as they press nothing: the screen check before blaming the bet list (1.2.2), Betty's windows in the log (1.2.3), the 1.2.1 betslip and runner-list reading, and the previous-selections panel fix.
+
+## [1.2.7] - 2026-10-31
+
+Analysis of the 10-fps Choose Bet and Stake recording (`logs/f8_9.2459992_20261031_191852`) revealed why 1.2.1-1.2.6 failed while 1.2.0 succeeded:
+1. Betty takes ~0.93 s (frames 12-18, 01.90s to 02.83s) after Enter on the stake to commit the bet calculation, redraw the bet list (blank at 02.36s), reset Singles to green (02.51s), and format the stake box (`100` -> `£1.00` at 02.83s).
+2. With 1.2.1's pacing removed, `r` was sent at 02.19s (only 0.29 s after Enter), mid-redraw. The shortcut was swallowed and Betty redrew Singles as green. At 02.83s, upon completing the stake update, the dialog lost focus and Windows activated the main application window ('A-Bet System') at 02.96s (frame 19), hiding the still-open edit dialogs.
+3. Both 'untitled' edit windows (Race Entry and Choose Bet and Stake) remained alive and open at 1366x768 directly behind 'A-Bet System'.
+
+### Fixed
+- **0.95 s wait after Enter on the stake** (`F8_AFTER_ENTER_SECS`, or `BETTY_F8_AFTER_ENTER_SECS` to configure): allows Betty to complete formatting the stake box and redrawing before any bet shortcut key or button check is sent.
+- **Topmost edit window restoration** (`betty_top_window`): prioritizes any visible full-size 'untitled' edit windows over 'A-Bet System', so `focus_betty()` brings the active edit dialog back to the front rather than focusing Home.
+- **Auto-recovery on Home detection** (`_still_on_f8`): if Home is seen while edit windows remain open behind it, `focus_betty()` restores the Choose Bet and Stake window to the front before concluding that Betty left the screen.
+- **Focus before bet shortcut** (`choose_bet_type`): calls `focus_betty()` before sending the shortcut key to ensure the dialog receives it.
+
+## [1.2.6] - 2026-10-31
+
+1.2.5 went Home too (9.2459992, 19:10, after `f8, 1, 0, 0, enter, f`, the row never turned green). The keys, their pace, and the code after the bet shortcut are now the same as 1.2.0's, so the cause can't be found by reading the code; it has to be seen.
+
+### Added
+- **A recording of Choose Bet and Stake** (`F8Recorder`): from F8 (or F11) until the bet type is chosen, Betty's screen and windows (which is on top, which has the keyboard) about 7-10 times a second, in memory. When Betty leaves the screen it is saved as `logs\f8_<wager>_<time>\` (frames plus `index.txt` with the keys sent so far at each frame); the newest 3 are kept. It only looks.
+
+## [1.2.5] - 2026-10-31
+
+1.2.4 went Home too (9.2459992, 19:05): Betty showed Win Only, so the each-way check changed nothing. With 1.2.3-1.2.4 the keys and clicks sent to Betty, and their pace on Choose Bet and Stake, are the same as 1.2.0's; what is left is the time 1.2.1's quicker reads took out between them. Singles went in on 1.2.1 (18:33); only the two-dog forecast failed.
+
+### Fixed
+- **2 s between the last selection's check and F8** (`F8_AFTER_SELECTIONS_SECS`, or `BETTY_F8_AFTER_SELECTIONS_SECS` to change it without a build). 1.2.0's whole-betslip read left Betty about 3 s there; 1.2.1's read of the last two lines about 1 s. This is the one change in 1.2.5, so the next try of a forecast says whether this gap is the cause.
+
+## [1.2.4] - 2026-10-31
+
+1.2.3 went Home on Choose Bet and Stake too (9.2459992, 18:53, keys paced: `f8, 1, 0, 0, enter, r`), and 1.2.0 then entered the same wager (18:56, user's swap back). So the key speed wasn't it. With the pacing back, the one thing left on that screen that 1.2.0 does and 1.2.1 doesn't is the each-way check.
+
+### Fixed
+- **The each-way button is read after the stake again and set to the bet** (as in 1.2.0): Each Way showing on a win bet -> W, Win Only on an each-way bet -> E. 1.2.1 had dropped the read and pressed only E, taking every bet as starting at Win Only. When the button had to be changed, the log now says what it showed (`Choose Bet and Stake showed Each Way after the stake: W pressed.`), which 1.2.0 never said.
+
+## [1.2.3] - 2026-10-31
+
+1.2.2 went Home on Choose Bet and Stake again (9.2459992, 18:37, keys `f8, 1, 5, 0, enter, f`): the wait after Enter wasn't enough. Both of 1.2.1-1.2.2's live wagers went this way; 1.2.0 never did. Bets.exe itself didn't crash (one process since the morning, nothing in Windows' log or BETTYERR.TXT), so Betty's bet edit window closed or went behind 'A-Bet System' (user: the edit is its own window, Home is the main one).
+
+### Fixed
+- **Stake-screen keys paced again** (user, 31 Oct: typed too fast): 0.08 s after each key on Choose Bet and Stake (`F8_KEY_GAP_SECS`, about what 1.2.0's screenshot per key gave), 0.2 s once the screen shows before the first key (`F8_SETTLE_SECS`), and 1.2.0's 0.01 s between backspaces. Still no screenshot per key. About 1 s a bet.
+
+### Added
+- **Betty's windows in the log** when Betty leaves Choose Bet and Stake (`betty_windows_report`): each of Bets.exe's windows top first, and which has the keyboard. One window = the bet edit closed; an untitled one behind 'A-Bet System' = it was pushed behind.
+
+## [1.2.2] - 2026-10-31
+
+From 1.2.1's first live wager on the manager till (9.2459992, 18:21): a reversed forecast went to staff as "could not select only reversed forecast in Betty's bet list (selected: [])". The row had turned green, then Betty was on Home; the staff screenshot shows Home. Nobody touched the till.
+
+### Fixed
+- **A short wait after Enter on the stake** (`F8_AFTER_ENTER_SECS`, 0.1 s). 1.2.1 sent the stake, Enter and the bet shortcut in the same instant; 1.2.0 had 0.1 s after Enter (and a screenshot after every key) and never went Home there. The other stake-screen keys still don't wait.
+- **Betty leaving Choose Bet and Stake is called that** (`_still_on_f8`): before the bet list's colours are blamed, or a row clicked when its shortcut didn't turn it green, the screen is checked. When Betty has left, the reason is "Betty left Choose Bet and Stake (now on …)" with the keys sent there printed, and nothing is clicked on the other screen.
+- `scratch/test_bet_list_choice.py` has the case: Betty on Home just after the row went green.
+
 ## [1.2.1] - 2026-10-31
 
 From the cashier till (user, 31 Oct): entry had become much slower, and the previous-selections panel opened but the time was typed anyway.

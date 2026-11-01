@@ -1,4 +1,4 @@
-__version__ = "1.2.1"
+__version__ = "1.2.11"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -4467,6 +4467,8 @@ def load_wager(row: int, number: str) -> dict:
         read = (details['number'], details['struck_clock'], details['payment_pence'])
         if details['number'] == number and details['struck_time'] and details['payment_pence'] is not None:
             if read == last_read:
+                corpus_save('wager_details', img, {'number': number},
+                            {k: details[k] for k in ('number', 'struck_clock', 'payment_pence')})
                 return details
             time.sleep(0.15)
         else:
@@ -4618,6 +4620,7 @@ def _betslip_box(img: Any, rows: tuple) -> tuple:
     return (left, rows[0], 1356 - left, rows[1])
 RACE_LIST_ROW = (3, 2, 397, 33)               # first row of the runner list ("Worc 1:10 | 6. Reinado | 12-1")
 RACE_LIST_PITCH = 35
+F8_EACH_WAY_BOX = (152, 649, 140, 30)  # Choose Bet and Stake's Each Way button: green when on
 F8_ROW_GREEN = (0, 255, 64)
 MAX_MEETING_STEPS = 12   # 'right' presses before giving up on a meeting at the typed time
 MEETING_REREAD_SECS = 1.5  # an unread top meeting is read again for up to this long before 'right' is pressed
@@ -4981,6 +4984,14 @@ def read_whole_betslip() -> list[dict]:
         if not _click_betslip_arrow(img, 'down', _betslip_offset(lines)):
             break
     return [dict(seen[n], n=n, row=n - 1) for n in sorted(seen)]
+
+
+_last_betslip_shot: Any = None  # the screen _read_new_betslip_line last read its lines from
+
+
+def corpus_line(line: dict) -> dict:
+    """A betslip line as the tests compare it: what the program checks of it."""
+    return {k: line.get(k) for k in ('n', 'meeting', 'time', 'number', 'name', 'price', 'guaranteed')}
 
 
 def check_new_betslip_line(lines: list[dict], already_on_slip: int, label: str) -> dict:
@@ -5373,22 +5384,31 @@ def top_meeting_in_race_list(img: Any, candidates: list[str], prefer: str | None
     """Which of `candidates` (meetings racing at the typed time) heads the runner list, read from its first rows.
     None when the label isn't clearly one of them (`nearest_meeting_label`); a label two meetings share is `prefer`,
     the meeting wanted, whose rows the caller checks (horses or dogs)."""
-    votes: dict[str, int] = {}
     x, y, w, h = RACE_LIST_ROW
-    # The first three labels in one read (one read each took three times as long, on every runner list)
+
+    def one_by_one() -> list[str]:
+        return [_ocr_bw(img, (x, y + i * RACE_LIST_PITCH, 130, h), '--psm 7', scale=3) for i in range(3)]
+
+    def vote(texts: list[str]) -> str | None:
+        votes: dict[str, int] = {}
+        for text in texts[:3]:
+            # Betty's label starts with a capital ('Shef 6:58'); the list's left border can read as a stray 'i' before it
+            cap = re.search(r'[A-Z][A-Za-z]{2,3}', text)
+            word = (cap.group(0) if cap else re.sub(r'[^A-Za-z]', '', text)).lower()[:4]
+            if len(word) < 3:
+                continue
+            best = nearest_meeting_label(word, candidates, prefer)
+            if best:
+                votes[best] = votes.get(best, 0) + 1
+        return max(votes, key=lambda k: votes[k]) if votes else None
+
+    # The first three labels in one read (one read each took three times as long, on every runner list). It reads
+    # most labels better, but can lose a label's first capital: 'Timb 2:42(v)' read 'imb 2:42(v)' and named no meeting,
+    # where 1.2.0's read row by row named Timberwell (9.2460715 and 9.2460730, 1 Nov: both to staff). So when it names
+    # none, the rows are read one at a time as in 1.2.0 before the label counts as unread.
     texts = [t for t in _ocr_bw(img, (x, y, 130, 3 * RACE_LIST_PITCH), '--psm 6', scale=3).splitlines() if t.strip()]
-    if len(texts) < 2:  # not read as rows: one at a time, as before
-        texts = [_ocr_bw(img, (x, y + i * RACE_LIST_PITCH, 130, h), '--psm 7', scale=3) for i in range(3)]
-    for text in texts[:3]:
-        # Betty's label starts with a capital ('Shef 6:58'); the list's left border can read as a stray 'i' before it
-        cap = re.search(r'[A-Z][A-Za-z]{2,3}', text)
-        word = (cap.group(0) if cap else re.sub(r'[^A-Za-z]', '', text)).lower()[:4]
-        if len(word) < 3:
-            continue
-        best = nearest_meeting_label(word, candidates, prefer)
-        if best:
-            votes[best] = votes.get(best, 0) + 1
-    return max(votes, key=lambda k: votes[k]) if votes else None
+    top = vote(texts) if len(texts) >= 2 else None
+    return top or vote(one_by_one())
 
 
 # --- The runner list read by its contents: which race heads it, from the whole label column, the runners' cloth
@@ -5771,8 +5791,16 @@ def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: 
         if top or time.time() - t_read > reread_secs:
             break
         time.sleep(0.1)
+
+    def decided(result: str | None) -> str | None:
+        if corpus_on():
+            corpus_save('runner_top', shot, {'meeting': meeting, 'hhmm': hhmm, 'candidates': candidates,
+                                             'want_dogs': want_dogs, 'both_kinds': both_kinds,
+                                             'want_virtual': want_virtual, 'card': corpus_card(hhmm)}, result)
+        return result
+
     if top != meeting:
-        return top
+        return decided(top)
     # Horses and dogs can share a meeting's label (Doncaster): a dog list's rows read 'Trap 1. ..', a horse
     # list's '01. ..', so the kind of list must be the selection's kind too
     dogs = race_list_is_dogs(shot)
@@ -5782,11 +5810,20 @@ def _runner_list_top(meeting: str, hhmm: str, candidates: list[str], want_dogs: 
         shot = pyautogui.screenshot()
         dogs = race_list_is_dogs(shot)
     if dogs is None and both_kinds:
+        decided("staff: horses or dogs unread")
         raise WagerForStaff(f"can't read whether Betty's {meeting} {clock_12h(hhmm)} list is the horses or "
                             "the dogs (both race then)")
     if dogs is None or dogs == want_dogs:
-        return meeting
-    return f"{meeting} {'dogs' if dogs else 'horses'}"
+        return decided(meeting)
+    return decided(f"{meeting} {'dogs' if dogs else 'horses'}")
+
+
+def corpus_card(hhmm: str) -> list[dict]:
+    """The card's runners at this time (and 12 hours from it), for a decision kept by corpus_save: what the replay
+    gives the program as Betty's card, as it was then (virtual races leave the feed once run)."""
+    times = _times_12h_apart(hhmm)
+    return [dict(r, dogs=dogs) for src, dogs in ((racecard_manager, False), (greyhound_card, True))
+            for r in src.get_runners() if r.get('time_str') in times]
 
 
 def runner_list_signature(img: Any) -> tuple:
@@ -5856,6 +5893,7 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
     NAV_TIMEOUT. A box that opens late (after answer_entry_popups stopped looking) is answered here; the betslip
     under it isn't read. Only the last lines are read (read_betslip_tail): the new one, and one above it.
     """
+    global _last_betslip_shot
     t0 = time.time()
     while True:
         _check_stop()
@@ -5864,6 +5902,7 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
         box_open = any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values())
         lines = [] if box_open else read_betslip_tail(img)
         if betslip_count(lines, None if box_open else img) > already_on_slip or time.time() - t0 > NAV_TIMEOUT:
+            _last_betslip_shot = img  # the screen the lines were read from, for corpus_save
             return lines
         if box_open:
             answer_entry_popups()
@@ -5972,10 +6011,19 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
         print(f"[*] Added {label} with {'numpad + (price)' if takes_price else 'Enter (SP)'}.")
     answer_entry_popups(wait=POPUP_WAIT_AFTER_ADD)  # a box opening later is answered by the betslip read
 
-    got = check_new_betslip_line(_read_new_betslip_line(already_on_slip), already_on_slip, label)
+    lines = _read_new_betslip_line(already_on_slip)
+    inputs = {'already_on_slip': already_on_slip, 'label': label, 'horse': horse}
+    try:
+        got = check_new_betslip_line(lines, already_on_slip, label)
+    except WagerForStaff as e:
+        corpus_save('betslip_line', _last_betslip_shot, inputs, {'error': str(e)})
+        raise
     if takes_price and got['price'].upper() == 'SP':  # user's rule: a price taken but none on Betty yet -> staff
         raise WagerForStaff(f"the customer took {horse.get('price')} on {label} but Betty has no price for it yet")
     problems = betslip_line_problems(got, horse)
+    if corpus_on():
+        corpus_save('betslip_line', _last_betslip_shot, dict(inputs, card=corpus_card(hhmm)),
+                    {'line': corpus_line(got), 'problems': problems})
     if problems:
         raise WagerForStaff(f"betslip shows {', '.join(problems)} for {label}")
     print(f"[+] Betslip line {got['n']}: {got['meeting']} {got['time']} {got['number']}. {got['name']} {got['price']} (checked)")
@@ -6375,20 +6423,43 @@ def bet_label_score(text: str, canon: str) -> float:
 _f8_trail: list[str] = []  # keys sent on Choose Bet and Stake for the bet in hand, each marked when Betty had left it
 
 
+# Choose Bet and Stake, from F8 to F10 / F11, is 1.2.0's code again (1.2.8): 1.2.1 took Betty as buffering the keys
+# there and dropped the look after each key and the waits, and 9.2459992 (a two-dog reversed forecast) then went Home
+# on that screen on every try of 1.2.1-1.2.7; 1.2.0 entered it, and so did the user by hand (31 Oct, 1 Nov). Putting
+# back only some of the waits (1.2.3-1.2.5) didn't do it. 1.2.10: a second after the stake and after the bet type
+# (F8_AFTER_STAKE_SECS, F8_AFTER_BET_TYPE_SECS). Keep this stretch as it is unless a change is tried live.
 def _f8_key(key: str):
     """
-    A key on Choose Bet and Stake, kept in the trail the log prints if Betty leaves that screen (9.2458229, 30 Oct and
-    9.2455944, 28 Oct went to Home after F8 and nothing said after which keys). Betty buffers keys, so none waits;
-    a screenshot after each one (13 or so a bet) is gone too (user, 31 Oct: speed).
+    A key on Choose Bet and Stake, noting whether Betty still shows it just after (colours only, no OCR). Only for the
+    log: 9.2458229 (30 Oct) and 9.2455944 (28 Oct) went to Home after F8 and nothing said which key did it.
     """
     betty_press(key)
-    _f8_trail.append(key)
+    try:
+        arr = np.array(pyautogui.screenshot().convert('RGB'))
+        still = _signals_pass(arr, SCREEN_SIGNATURES[SCREEN_BET_AND_STAKE]['colours'])
+    except Exception:  # a screenshot that can't be read changes nothing here
+        still = True
+    _f8_trail.append(key if still else f"{key} (screen gone)")
 
 
 def _left_f8(screen: str, doing: str) -> Exception:
     """The staff reason for Betty leaving Choose Bet and Stake, with the keys sent there printed first."""
     print(f"[*] Keys on Choose Bet and Stake before it left: {', '.join(_f8_trail) or 'none'}")
+    print(f"[*] Betty's windows now, top first: {betty_windows_report()}")
+    folder = F8_RECORDER.dump(_current_wager)
+    if folder:
+        print(f"[*] Choose Bet and Stake, 10 frames a second from F8: {folder}")
     return WagerForStaff(f"Betty left Choose Bet and Stake (now on {screen}) {doing}")
+
+
+def _still_on_f8(doing: str):
+    """Before the bet list's colours are blamed: a list read with nothing green was Betty on Home (9.2459992, 31 Oct:
+    'selected: []', no keys printed). Raises the 'left' reason when Betty isn't on Choose Bet and Stake."""
+    screen = detect_screen()
+    if screen == SCREEN_UNKNOWN:  # often Betty mid-redraw: not taken as gone
+        screen = wait_for_screen(ALL_SCREENS - {SCREEN_UNKNOWN}, timeout=1.5)
+    if screen not in (SCREEN_BET_AND_STAKE, SCREEN_UNKNOWN):
+        raise _left_f8(screen, doing)
 
 
 def _find_bet_row(canon: str) -> tuple[int | None, list]:
@@ -6404,6 +6475,7 @@ def _find_bet_row(canon: str) -> tuple[int | None, list]:
         rows = _f8_rows(shot)
         scores = [bet_label_score(text, canon) for text, _ in rows]
         if max(scores, default=0.0) > 0:
+            corpus_save('bet_row', shot, {'canon': canon}, scores.index(max(scores)))
             return scores.index(max(scores)), rows
         texts = [text for text, _ in rows]
         if sum(1 for t in texts if nearest_bet_label(t)) >= F8_PAGE_MIN_ROWS and texts == last:
@@ -6417,6 +6489,7 @@ def _find_bet_row(canon: str) -> tuple[int | None, list]:
                 print(f"[*] Bet list: '{canon}' found by the row-by-row read (the one-pass read had {texts}).")
                 return scores.index(max(scores)), slow
             print(f"[*] Bet list page has no '{canon}': {[nearest_bet_label(t)[0] if nearest_bet_label(t) else t for t in texts]}")
+            corpus_save('bet_row', shot, {'canon': canon}, None)
             return None, rows
         last = texts
         time.sleep(0.08)
@@ -6440,13 +6513,15 @@ def choose_bet_type(canon: str, extending: bool = False):
             return
 
     if key:
-        _f8_key(key)  # buffered: the bet list read below waits for its green
+        _f8_key(key)
+        time.sleep(0.08)
     for page in range(5):
         i, rows = _find_bet_row(canon)
         if i is not None:
             break
         print(f"[*] '{canon}' isn't on this page of the bet list: PgDn.")
         _f8_key('pagedown')  # the list pages round; bet types depend on the selections entered
+        time.sleep(0.08)
         screen = detect_screen()
         if screen != SCREEN_BET_AND_STAKE:
             raise _left_f8(screen, f"after PgDn while choosing '{canon}'")
@@ -6463,6 +6538,7 @@ def choose_bet_type(canon: str, extending: bool = False):
     # it, but Betty can be slow to show that (each way just pressed): the row has NAV_TIMEOUT to turn green first
     # (9.2459384, 31 Oct: Trebles read 0.08 s after 'b' as not chosen, clicked off, Singles off too: nothing chosen)
     if not _f8_row_turns(i, True, NAV_TIMEOUT if key else 0):
+        _still_on_f8(f"before clicking '{canon}'")  # the row's place on another screen is something else
         betty_click(*row_centre(i))
         if not _f8_row_turns(i, True):
             raise WagerForStaff(f"clicked {canon} in Betty's bet list but it didn't turn green (not clicked again)")
@@ -6478,12 +6554,19 @@ def choose_bet_type(canon: str, extending: bool = False):
                                         "(not clicked again)")
         chosen = [rows[j][0] for j, sel in enumerate(_f8_selected(pyautogui.screenshot())) if sel]
         if chosen != [rows[i][0]]:
+            _still_on_f8(f"after choosing '{canon}'")
             raise WagerForStaff(f"could not select only {canon} in Betty's bet list (selected: {chosen})")
     elif not _f8_selected(pyautogui.screenshot())[i]:
+        _still_on_f8(f"after choosing '{canon}'")
         raise WagerForStaff(f"could not select {canon} in Betty's bet list for extended bet")
 
 
 STAKE_BOX_DIGITS = 8  # backspaces clearing the last stake (pence): up to £99,999.99 (5 cleared only £999.99; review R18)
+# Stake > 1 s > bet type > 1 s > whatever comes next (F11, F10, F12) (user, 1 Nov). Betty's bet edit went behind Home
+# on Choose Bet and Stake with 1.2.0's 0.1 s after the stake and 0.15 s after the bet type too (9.2460715, a Lucky 15,
+# 1.2.9), not only on forecasts.
+F8_AFTER_STAKE_SECS = 1.0
+F8_AFTER_BET_TYPE_SECS = 1.0
 
 
 def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None = None):
@@ -6498,18 +6581,21 @@ def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None 
     if n_bets > 1:
         print(f"[*] {n_bets} x {canon} at {stake}p: entered as 1 {canon} at {stake * n_bets}p.")
         stake *= n_bets
-    # Keys only, all buffered by Betty (user, 31 Oct): no waits between them. A bet starts at Win Only, so only an each
-    # way bet presses E (user, 31 Oct: the each-way button isn't read first). Betty's total against Payment, before
-    # F12, still catches a bet gone in the wrong way.
     if bets_before > 0:
+        time.sleep(0.15)
         for _ in range(STAKE_BOX_DIGITS):
             betty_press('backspace')
+            time.sleep(0.01)
     for ch in str(stake):
         _f8_key(ch)
     _f8_key('enter')
-    if bet.get('each_way'):
-        _f8_key('e')
+    interruptible_sleep(F8_AFTER_STAKE_SECS)  # the each-way button is drawn after Enter too (review R18)
+    arr = np.array(pyautogui.screenshot().convert('RGB'))
+    ew_on = _colour_share(arr, F8_EACH_WAY_BOX, F8_ROW_GREEN) >= 0.4
+    if bool(bet.get('each_way')) != ew_on:
+        _f8_key('e' if bet.get('each_way') else 'w')
     choose_bet_type(canon, extending=bets_before > 0)
+    interruptible_sleep(F8_AFTER_BET_TYPE_SECS)  # before F11, F10 or the total read and F12
     ew_str = 'Each Way' if bet.get('each_way') else 'Win Only'
     print(f"[+] Bet {bet_no or bets_before + 1} entered: {canon}, {ew_str} @ {stake}p.")
 
@@ -6608,6 +6694,112 @@ def betty_top_window() -> int | None:
     return found[0] if found else None
 
 
+def betty_windows_report() -> str:
+    """
+    Betty's visible full-size windows, top first, for the log: whether the bet edit (an untitled window in front of
+    'A-Bet System') is still open when Betty shows Home. One window = the edit closed; two = it went behind. Bets.exe
+    itself ran on (one process since the morning) both times Betty went Home on Choose Bet and Stake (user, 31 Oct).
+    """
+    if os.environ.get("BETTY_HEADLESS") == "1":
+        return "not looked at (free test)"
+    try:
+        import ctypes.wintypes as wt
+        user32 = ctypes.windll.user32
+        front = user32.GetForegroundWindow()
+        found: list[str] = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+        def visit(hwnd, _):
+            rect = wt.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            if user32.IsWindowVisible(hwnd) and rect.right - rect.left > 200 and window_exe(hwnd) == BETTY_EXE:
+                title = ctypes.create_unicode_buffer(120)
+                user32.GetWindowTextW(hwnd, title, 120)
+                found.append(f"'{title.value or 'untitled'}' {rect.right - rect.left}x{rect.bottom - rect.top}"
+                             f"{' (has the keyboard)' if hwnd == front else ''}")
+            return True
+
+        user32.EnumWindows(visit, 0)
+        return "; ".join(found) or "none open"
+    except Exception as e:
+        return f"could not be listed ({e})"
+
+
+class F8Recorder:
+    """
+    Betty's screen and windows ten times a second from F8 until the bet type is chosen, kept in memory and written to
+    logs/f8_<wager>_<time>/ only when Betty leaves Choose Bet and Stake. 9.2459992 (31 Oct) went Home there five times
+    on 1.2.1-1.2.5 with the same keys 1.2.0 sent and entered it with; one screenshot at the end showed only Home. The
+    frames show what Betty did between the bet shortcut and Home (a box, a window behind, which had the keyboard).
+    Looks only: nothing is pressed, clicked or moved.
+    """
+    FRAMES = 80        # 8 s at 0.1 s
+    STEP = 0.1
+    KEPT = 3           # recordings kept in logs
+
+    def __init__(self):
+        self._frames: list[tuple] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        # Off unless asked for (BETTY_F8_RECORD=1): 1.2.0 had nothing else running on Choose Bet and Stake (1.2.8)
+        if os.environ.get("BETTY_HEADLESS") == "1" or os.environ.get("BETTY_F8_RECORD") != "1":
+            return
+        self.stop()
+        self._frames, self._stop = [], threading.Event()
+        self._thread = threading.Thread(target=self._run, name="f8 recorder", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1)
+            self._thread = None
+
+    def _run(self):
+        from PIL import ImageGrab
+        t0 = time.time()
+        while not self._stop.is_set():
+            try:
+                buf = io.BytesIO()
+                ImageGrab.grab().convert('RGB').save(buf, 'JPEG', quality=70)
+                self._frames.append((time.time() - t0, ','.join(_f8_trail), betty_windows_report(), buf.getvalue()))
+                del self._frames[:-self.FRAMES]
+            except Exception:
+                pass
+            self._stop.wait(self.STEP)
+
+    def dump(self, number: str | None) -> str | None:
+        """The frames so far, as logs/f8_<wager>_<time>/NN_<secs>s.jpg and index.txt; the folder, or None."""
+        self.stop()
+        if not self._frames:
+            return None
+        try:
+            log_dir = app_paths.log_dir()
+            folder = os.path.join(log_dir, f"f8_{number or 'unknown'}_{time.strftime('%Y%m%d_%H%M%S')}")
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "index.txt"), "w", encoding="utf-8") as idx:
+                for n, (t, keys, windows, jpg) in enumerate(self._frames):
+                    name = f"{n:02d}_{t:05.2f}s.jpg"
+                    with open(os.path.join(folder, name), "wb") as f:
+                        f.write(jpg)
+                    idx.write(f"{name}  keys so far: {keys}  |  windows: {windows}\n")
+            old = sorted((d for d in os.listdir(log_dir) if d.startswith("f8_")),
+                         key=lambda d: os.path.getmtime(os.path.join(log_dir, d)))
+            for d in old[:-self.KEPT]:
+                for f in os.listdir(os.path.join(log_dir, d)):
+                    os.remove(os.path.join(log_dir, d, f))
+                os.rmdir(os.path.join(log_dir, d))
+            return folder
+        except Exception as e:
+            print(f"[-] Could not save the Choose Bet and Stake recording: {e}")
+            return None
+
+
+F8_RECORDER = F8Recorder()
+
+
 def focus_betty():
     """
     Gives Betty the keyboard again, through Windows (nothing in Betty is clicked). After the staff selection dialog
@@ -6685,16 +6877,22 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
             answer_entry_popups()
             bets_on_slip = 0
             _f8_trail[:] = ['f8']
+            F8_RECORDER.start()
             betty_press('f8')
         expect_screen({SCREEN_BET_AND_STAKE}, doing="Choose Bet and Stake (F8)")
         refresh_watcher_hud(f"Bet {idx + 1}/{len(plan)}: {canon}, {bet.get('stake_pence')}p"
                             f"{' each way' if bet.get('each_way') else ''}...")
-        enter_bet_terms(bet, canon, bets_on_slip, bet_no=idx + 1)
+        try:
+            enter_bet_terms(bet, canon, bets_on_slip, bet_no=idx + 1)
+        finally:
+            F8_RECORDER.stop()
         bets_on_slip += 1
         if idx < len(plan) - 1:
             if same_selections(plan[idx + 1][0], bet):
                 _f8_trail.clear()
-                _f8_key('f11')  # extend: same selections, next bet type (buffered: its stake keys follow at once)
+                F8_RECORDER.start()
+                _f8_key('f11')  # extend: same selections, next bet type
+                time.sleep(0.2)
             else:
                 betty_press('f10')  # new betting slip
                 expect_screen({SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY}, doing="new betting slip (F10)")
@@ -6738,6 +6936,7 @@ def commit_wager(number: str, payment_pence: int) -> str:
     while time.time() - t0 < NAV_TIMEOUT:
         if wager_gone_from_list(number):
             print(f"[+] Wager {number} placed: it has left the unedited list.")
+            corpus_outcome(number, "placed")
             return 'placed'
         time.sleep(0.3)
     raise WagerForStaff(f"after F12, wager {number} is still in the unedited list - please check it on Betty")
@@ -6960,6 +7159,7 @@ def watcher_process_wager(row: int, number: str):
     if test_mode_on.is_set():  # test mode: never placed by the program
         outcome = wait_for_staff_review(number)
         print(f"[+] Wager {number}: {outcome} by staff.")
+        corpus_outcome(number, "entered (test mode)", outcome)
         STATUS_HUD.set_outcome(f"{summary} entered, {outcome} by staff {time.strftime('%H:%M')}")
     else:
         commit_wager(number, pay)
@@ -7053,6 +7253,77 @@ def save_staff_screenshot(number: str) -> str | None:
         return None
 
 
+# --- Live capture for the tests: each decision the program takes from Betty's screen (the race on top of the runner
+# list, the betslip line after a selection, the bet list's row, a wager's View Wagers details), with the screen it was
+# taken from, kept in logs\corpus. scratch/test_live_corpus.py runs today's code on every one and says where it would
+# now decide differently, judged by how the wager ended (placed = the decision was right). The offline tests stood in
+# for Betty and only had the screens already seen: they passed while the tills failed (user, 1 Nov). Looks only;
+# written by a thread of its own, so nothing on the till waits for it. BETTY_CORPUS=0 turns it off.
+CORPUS_KEPT = 1500             # pictures kept (~90 KB each)
+_corpus_queue: queue.Queue = queue.Queue(maxsize=30)  # a full screen each: ~3 MB in memory until written
+_corpus_writer_started = False
+_corpus_lock = threading.Lock()
+
+
+def corpus_dir() -> str:
+    return os.path.join(app_paths.log_dir(), "corpus")
+
+
+def corpus_on() -> bool:
+    return os.environ.get("BETTY_HEADLESS") != "1" and os.environ.get("BETTY_CORPUS") != "0"
+
+
+def corpus_save(kind: str, img: Any, inputs: dict, output: Any):
+    """One decision for the tests (see above). Never raises, never waits: a full queue drops it."""
+    if img is None or not corpus_on():
+        return
+    _corpus_put({'kind': kind, 'img': img, 'inputs': inputs, 'output': output})
+
+
+def corpus_outcome(number: str | None, outcome: str, reason: str = ""):
+    """How a wager ended (placed / entered in test mode / staff), which says whether its decisions were right."""
+    if number and corpus_on():
+        _corpus_put({'kind': 'outcome', 'img': None, 'inputs': {}, 'output': {'outcome': outcome, 'reason': reason},
+                     'wager': number})
+
+
+def _corpus_put(item: dict):
+    global _corpus_writer_started
+    try:
+        item.setdefault('wager', _current_wager)
+        item.update(version=__version__, time=time.strftime('%Y-%m-%d %H:%M:%S'))
+        with _corpus_lock:
+            if not _corpus_writer_started:
+                threading.Thread(target=_corpus_writer, name="corpus", daemon=True).start()
+                _corpus_writer_started = True
+        _corpus_queue.put_nowait(item)
+    except Exception:  # queue full, or anything else: the till never waits for the tests
+        pass
+
+
+def _corpus_writer():
+    written = 0
+    while True:
+        item = _corpus_queue.get()
+        try:
+            folder = os.path.join(corpus_dir(), item['time'][:10].replace('-', ''))
+            os.makedirs(folder, exist_ok=True)
+            img = item.pop('img')
+            if img is not None:
+                name = f"{item['time'][11:].replace(':', '')}_{int(time.time() * 1000) % 1000:03d}_{item['kind']}_{item['wager'] or 'none'}.png"
+                img.save(os.path.join(folder, name))
+                item['file'] = os.path.relpath(os.path.join(folder, name), corpus_dir())
+            with open(os.path.join(corpus_dir(), "index.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(item, default=str) + "\n")
+            written += 1
+            if written % 100 == 0:
+                pics = sorted(glob.glob(os.path.join(corpus_dir(), "*", "*.png")), key=os.path.getmtime)
+                for old in pics[:-CORPUS_KEPT]:
+                    os.remove(old)
+        except Exception:
+            pass
+
+
 def leave_wager_for_staff(number: str, reason: str):
     """
     A wager the program can't do. Test mode: back out and leave it unedited (staff are watching). Otherwise:
@@ -7060,6 +7331,7 @@ def leave_wager_for_staff(number: str, reason: str):
     """
     _wagers_left_for_staff.add(number)
     print(f"[!] Wager {number} needs staff: {reason}")
+    corpus_outcome(number, "staff", reason)
     shot = save_staff_screenshot(number)
     _lessons_outcome(placed=False)
     # The slip as read, for 'Teach from this slip' on the Staff entries tab (only when it was this wager's)
