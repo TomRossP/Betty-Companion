@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.14] - 2026-11-01
+
+1.2.13 placed 9.2460882 (7 bets, 10 selections from the previous-selections panel) but slowly (user, 1 Nov): the OCR, each panel click, and above all the wait between the bet going in and F12. Measured on the saved screens: a read takes ~145 ms, of which ~140 ms is starting tesseract.exe (a blank picture takes as long); the panel's 3 rows took 0.95 s as 6 reads; F12 waited 1 s, then a read of the screen and two reads of the total (~1.5 s). The same wager's reversed forecast double sent 9.2460746 to staff every time.
+
+### Changed
+- **F12 straight after the last bet type, live** (user, 1 Nov): Choose Bet and Stake is told by its colours (~30 ms) and F12 is pressed. The total is no longer read before it: Betty checks it against the Payment itself at F12, and its question then goes to staff with nothing answered (as before). Test mode, which never presses F12, still reads and checks the total.
+- **1.2.0's waits on Choose Bet and Stake again**: 0.1 s after the stake (was 1 s) and 0.15 s after the bet type (was 1 s). 1.2.10 added them for Betty going Home, which was the Tesseract window (1.2.12); 1.2.12 placed a Lucky 15 and a Lucky 31. About 1.75 s a bet.
+- **Several pieces read with one start of Tesseract** (`_ocr_bw_many`: one run over a list of pictures): every row of the previous-selections panel (0.95 s -> ~0.25 s for 3 rows), and the betslip's last lines after each selection (~0.15 s a selection). The text is the same as one read each: 151 of 151 crops (panel rows; every betslip row of every saved screen).
+
+### Fixed
+- **Forecast doubles are entered** ('4 x 40p R/F/CAST DOUBLES': a reversed forecast in each of two races, 4 bets): Betty's "Rev. F'cast Doubles" and "Forecast Doubles" rows, found by name (no shortcut). They were costed but refused at entry ("bet type(s) the program can't enter yet: reversed forecast double", 9.2460746 five times on 1 Nov); no other type was refused in the logs since October. A straight forecast double keeps the order written.
+- **A bet type on a later page of the bet list**: the rows chosen on a page (Singles, from F8) are clicked off before PgDn. Only the page holding the type was checked, so Singles would have gone on too; no type had been paged to live before.
+
+### Added
+- `scratch/test_forecast_doubles.py` (in `run_all_tests.py`): 9.2460746's bet, Betty's row names, and choosing them on a stand-in list paged like Betty's. `nav_cases.py`: F12 with nothing read first, and a wrong total met by Betty's question at F12.
+
 ## [1.2.13] - 2026-11-01
 
 The previous-selections panel (right-click on the slip image) never worked live: every try said it "didn't show" and typed the selection instead (9.2460806 at 13:56-13:57, 9.2460882 at 14:02, the user's recording of 14:01). It opened every time. Its rows are white when the selection is on the slip being entered already and cyan when it isn't, and a red line runs only above and below them all, not between rows. The program looked for white rows each between two red lines, taken from screen 15 alone (one row, The Favourite, on its slip), so it could only find rows that didn't need adding. 1.2.0 looked for the same white row at y 286.

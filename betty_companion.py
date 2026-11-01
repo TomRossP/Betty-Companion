@@ -1,4 +1,4 @@
-__version__ = "1.2.13"
+__version__ = "1.2.14"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -31,6 +31,8 @@ import tkinter as tk
 import threading
 import atexit
 import glob
+import shutil
+import tempfile
 from difflib import SequenceMatcher
 from typing import Any
 from PIL import Image, ImageEnhance, ImageOps
@@ -4665,34 +4667,71 @@ ENTRY_BET_TYPES = {
     'straight forecast': ('f', 'straightforecasts'), 'reversed forecast': ('r', 'reversedforecasts'),
     'combination forecast': ('c', 'combinationfcasts'), 'tricast': ('i', 'tricasts'),
     'combination tricast': (None, 'combinationtricasts'),  # no shortcut (user): clicked in the list by name
+    # A forecast in each of two races, doubled ('4 x 40p R/F/CAST DOUBLES': 2 x 2 = 4 bets). Costed since October but
+    # refused at entry, so the whole wager went to staff (9.2460746, 1 Nov). Betty's rows (screen 26 p3-p4), found by
+    # name: no shortcut
+    'straight forecast double': (None, 'forecastdoubles'), 'reversed forecast double': (None, 'revfcastdoubles'),
 }
 # How Betty names each type on the betslip read-back ("1) Treble. ..."): letters that must appear
 READBACK_NAMES = {'single': 'single', 'double': 'double', 'treble': 'treble', 'accumulator': 'fold', 'yankee': 'yankee',
                   'patent': 'patent', 'lucky 15': 'lucky15', 'lucky 31': 'lucky31', 'lucky 63': 'lucky63',
                   'trixie': 'trixie', 'canadian': 'canadian', 'heinz': 'heinz', 'super heinz': 'superheinz',
                   'goliath': 'goliath', 'straight forecast': 'forecast', 'reversed forecast': 'forecast',
-                  'combination forecast': 'forecast', 'tricast': 'tricast', 'combination tricast': 'tricast'}
+                  'combination forecast': 'forecast', 'tricast': 'tricast', 'combination tricast': 'tricast',
+                  'straight forecast double': 'forecastdouble', 'reversed forecast double': 'fcastdouble'}
 
 
 RULE_ROW_DARK_SHARE = 0.35  # a row this dark across the crop is a ruled line or a box edge, never text (text < 0.2)
 
 
-def _ocr_bw(img: Any, box: tuple, config: str = '--psm 6', scale: int = 2, drop_rules: bool = False) -> str:
-    """Dark text on a light panel: grey, threshold, enlarge, read. drop_rules: rows dark across the crop (a ruled line,
-    Betty's dotted focus box) are blanked first; on 9.2452710 (26 Oct) the box's top edge on the crop's first row
-    turned '8-1' into '81', the line didn't read and the betslip showed 2 selections instead of 3."""
+def _bw_crop(img: Any, box: tuple, scale: int, drop_rules: bool) -> Any:
+    """The crop _ocr_bw reads: grey, rules blanked when asked, enlarged, black and white."""
     x, y, w, h = box
     grey = img.convert('L').crop((x, y, x + w, y + h))
     if drop_rules:
         arr = np.array(grey)
         arr[(arr < 150).mean(axis=1) > RULE_ROW_DARK_SHARE] = 255
         grey = Image.fromarray(arr)
-    crop = grey.resize((w * scale, h * scale)).point(lambda v: 0 if v < 150 else 255)
+    return grey.resize((w * scale, h * scale)).point(lambda v: 0 if v < 150 else 255)
+
+
+def _ocr_bw(img: Any, box: tuple, config: str = '--psm 6', scale: int = 2, drop_rules: bool = False) -> str:
+    """Dark text on a light panel: grey, threshold, enlarge, read. drop_rules: rows dark across the crop (a ruled line,
+    Betty's dotted focus box) are blanked first; on 9.2452710 (26 Oct) the box's top edge on the crop's first row
+    turned '8-1' into '81', the line didn't read and the betslip showed 2 selections instead of 3."""
     try:
-        return pytesseract.image_to_string(crop, config=config).strip()
+        return pytesseract.image_to_string(_bw_crop(img, box, scale, drop_rules), config=config).strip()
     except Exception as e:
         print(f"[-] OCR failed: {e}")
         return ""
+
+
+def _ocr_bw_many(img: Any, boxes: list, config: str = '--psm 6', scale: int = 2, drop_rules: bool = False) -> list[str]:
+    """
+    _ocr_bw on several boxes with one start of Tesseract: each crop a page of one run (a list of pictures). A start
+    costs ~140 ms of the ~145 ms a small read takes (1 Nov), so the panel's 3 rows took 0.95 s as 6 reads. The text
+    is the same as one read per box: 151 of 151 crops (panel rows, every betslip row on the saved screens).
+    """
+    if len(boxes) < 2:
+        return [_ocr_bw(img, b, config, scale, drop_rules) for b in boxes]
+    folder = tempfile.mkdtemp(prefix="betty_ocr_")
+    try:
+        paths = []
+        for i, box in enumerate(boxes):
+            paths.append(os.path.join(folder, f"{i:03d}.png"))
+            _bw_crop(img, box, scale, drop_rules).save(paths[-1])
+        listing = os.path.join(folder, "pages.txt")
+        with open(listing, "w", encoding="utf-8") as f:
+            f.write("\n".join(paths) + "\n")
+        pages = pytesseract.image_to_string(listing, config=config).split("\f")  # a form feed ends each page
+        if len(pages) < len(boxes):
+            raise ValueError(f"{len(pages)} pages read of {len(boxes)}")
+        return [p.strip() for p in pages[:len(boxes)]]
+    except Exception as e:
+        print(f"[-] OCR of {len(boxes)} boxes in one go failed ({e}): read one by one.")
+        return [_ocr_bw(img, b, config, scale, drop_rules) for b in boxes]
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def betty_meeting_abbrev(meeting: str) -> str:
@@ -4786,18 +4825,28 @@ def _betslip_row_box(left: int, row: int) -> tuple:
 BETSLIP_ROW_READS = ((True, 0, 0, 3), (False, 0, 0, 3), (False, 5, 2, 3), (False, 0, 0, 4))
 
 
-def read_betslip_row(img: Any, row: int, arr: Any = None, left: int | None = None) -> dict | None:
+def _betslip_first_read_box(left: int, row: int) -> tuple:
+    """The box of a betslip row's first way of reading (BETSLIP_ROW_READS[0])."""
+    x, y, w, h = _betslip_row_box(left, row)
+    _, trim_x, trim_y, _ = BETSLIP_ROW_READS[0]
+    return x + trim_x, y + trim_y, w - trim_x, h - trim_y
+
+
+def read_betslip_row(img: Any, row: int, arr: Any = None, left: int | None = None,
+                     first: str | None = None) -> dict | None:
     """One row of the betslip panel read as a selection line ('n' = the number printed on it, None when that didn't
-    read), or None when the row doesn't read as one."""
+    read), or None when the row doesn't read as one. `first`: the row's first way of reading, done already (several
+    rows' in one start of Tesseract, read_betslip_tail)."""
     left = betslip_left(img) if left is None else left
     arr = np.array(img.convert('RGB')) if arr is None else arr
     box = _betslip_row_box(left, row)
     top = box[1]
     m = None
-    for drop, trim_x, trim_y, scale in BETSLIP_ROW_READS:  # the next way only when the last didn't read
+    for k, (drop, trim_x, trim_y, scale) in enumerate(BETSLIP_ROW_READS):  # the next way only when the last didn't read
         x, y, w, h = box
-        m = BETSLIP_SELECTION_LINE.match(_ocr_bw(img, (x + trim_x, y + trim_y, w - trim_x, h - trim_y), '--psm 7',
-                                                 scale, drop_rules=drop).strip())
+        text = first if k == 0 and first is not None else _ocr_bw(
+            img, (x + trim_x, y + trim_y, w - trim_x, h - trim_y), '--psm 7', scale, drop_rules=drop)
+        m = BETSLIP_SELECTION_LINE.match(text.strip())
         if m:
             break
     if not m:
@@ -5268,10 +5317,12 @@ def reuse_panel_rows(img: Any) -> list[dict]:
     'on_slip': the row is white, the selection is on the slip being entered already."""
     rows = []
     arr = np.array(img.convert('RGB'))
-    for k, (y0, y1) in enumerate(_reuse_row_boxes(img)):
-        h = y1 - y0
-        label = _ocr_bw(img, (RACE_LIST_LABEL_COL[0] + 3, y0 + 3, RACE_LIST_LABEL_COL[1] - 6, h - 6), '--psm 7', 3)
-        name = _ocr_bw(img, (RACE_LIST_NAME_COL[0] + 2, y0 + 3, RACE_LIST_NAME_COL[1] - 6, h - 6), '--psm 7', 3)
+    boxes = _reuse_row_boxes(img)
+    texts = _ocr_bw_many(img, [box for y0, y1 in boxes for box in (
+        (RACE_LIST_LABEL_COL[0] + 3, y0 + 3, RACE_LIST_LABEL_COL[1] - 6, y1 - y0 - 6),
+        (RACE_LIST_NAME_COL[0] + 2, y0 + 3, RACE_LIST_NAME_COL[1] - 6, y1 - y0 - 6))], '--psm 7', 3)  # one start
+    for k, (y0, y1) in enumerate(boxes):
+        label, name = texts[2 * k], texts[2 * k + 1]
         m_time = re.search(r'(\d{1,2})[:.](\d{2})', label)
         cap = re.search(r'[A-Z][A-Za-z]{2,3}', label)
         on_slip = _colour_share(arr, (10, y0 + 3, 120, 4), (255, 255, 255), 20) >= 0.8  # above the text: its colour
@@ -5918,7 +5969,10 @@ def read_betslip_tail(img: Any, n: int = 2) -> list[dict]:
     arr, left = np.array(img.convert('RGB')), betslip_left(img)
     rows = betslip_rows_with_text(img)
     full = bool(rows) and rows[-1] == BETSLIP_MAX_LINES - 1
-    out = [line for line in (read_betslip_row(img, r, arr, left) for r in rows[-n:]) if line]
+    drop, _, _, scale = BETSLIP_ROW_READS[0]
+    firsts = _ocr_bw_many(img, [_betslip_first_read_box(left, r) for r in rows[-n:]], '--psm 7', scale, drop)
+    out = [line for line in (read_betslip_row(img, r, arr, left, first) for r, first in zip(rows[-n:], firsts))
+           if line]
     for line in out:
         line['panel_full'] = full
     hidden = _betslip_offset(out)
@@ -6470,7 +6524,7 @@ _f8_trail: list[str] = []  # keys sent on Choose Bet and Stake for the bet in ha
 # back only some of the waits (1.2.3-1.2.5) didn't do it. 1.2.10: a second after the stake and after the bet type
 # (F8_AFTER_STAKE_SECS, F8_AFTER_BET_TYPE_SECS). Keep this stretch as it is unless a change is tried live.
 # 1.2.12: the cause wasn't the keys or their pace but a tesseract.exe console taking the keyboard from Betty just
-# after the bet shortcut (_ask_tesseract_version_hidden). The 1.2.10 waits come out once 1.2.12 is proven live.
+# after the bet shortcut (_ask_tesseract_version_hidden). 1.2.14: the 1.2.10 waits out again, 1.2.12 proven live.
 def _f8_key(key: str):
     """
     A key on Choose Bet and Stake, noting whether Betty still shows it just after (colours only, no OCR). Only for the
@@ -6555,6 +6609,21 @@ def choose_bet_type(canon: str, extending: bool = False):
                 and (extending or not any(sel for _, sel in initial_rows[1:]))):
             return
 
+    x, y, w, _ = F8_BET_LIST_REGION_1368
+
+    def row_centre(r: int) -> tuple[int, int]:
+        return x + w // 2, int(y + (r + 0.5) * F8_ROW_HEIGHT_1368)
+
+    def deselect(rows: list, keep: int | None, why: str):
+        """Every row chosen on this page but `keep` clicked off, each seen to go off."""
+        for j, selected in enumerate(_f8_selected(pyautogui.screenshot())):
+            if selected and j != keep:
+                print(f"[*] Deselecting '{rows[j][0]}' ({why}).")
+                betty_click(*row_centre(j))
+                if not _f8_row_turns(j, False):
+                    raise WagerForStaff(f"'{rows[j][0]}' stayed chosen in Betty's bet list after a click "
+                                        "(not clicked again)")
+
     if key:
         _f8_key(key)
         time.sleep(0.08)
@@ -6562,6 +6631,10 @@ def choose_bet_type(canon: str, extending: bool = False):
         i, rows = _find_bet_row(canon)
         if i is not None:
             break
+        if not extending:
+            # A row chosen here (Singles, from F8) can't be seen or turned off from the next page, and would go on
+            # too: only the rows of the page holding the type were checked (1.2.14; no type had been paged to live)
+            deselect(rows, None, f"{canon} is on another page")
         print(f"[*] '{canon}' isn't on this page of the bet list: PgDn.")
         _f8_key('pagedown')  # the list pages round; bet types depend on the selections entered
         time.sleep(0.08)
@@ -6572,10 +6645,6 @@ def choose_bet_type(canon: str, extending: bool = False):
         raise WagerForStaff(f"Betty's bet list has no '{canon}' for these selections")
     if rows[i][0] != label:
         print(f"[*] Bet list: '{rows[i][0]}' taken as {canon} ('{label}').")
-    x, y, w, _ = F8_BET_LIST_REGION_1368
-
-    def row_centre(r: int) -> tuple[int, int]:
-        return x + w // 2, int(y + (r + 0.5) * F8_ROW_HEIGHT_1368)
 
     # A click on a row toggles it, so a row is clicked only once Betty has shown it isn't chosen. Its shortcut chooses
     # it, but Betty can be slow to show that (each way just pressed): the row has NAV_TIMEOUT to turn green first
@@ -6588,13 +6657,7 @@ def choose_bet_type(canon: str, extending: bool = False):
 
     # Selecting a row doesn't change the list, so the rows' names are known: from here only the green is read
     if not extending:
-        for j, selected in enumerate(_f8_selected(pyautogui.screenshot())):
-            if selected and j != i:
-                print(f"[*] Deselecting '{rows[j][0]}' (only {canon} wanted).")
-                betty_click(*row_centre(j))
-                if not _f8_row_turns(j, False):
-                    raise WagerForStaff(f"'{rows[j][0]}' stayed chosen in Betty's bet list after a click "
-                                        "(not clicked again)")
+        deselect(rows, i, f"only {canon} wanted")
         chosen = [rows[j][0] for j, sel in enumerate(_f8_selected(pyautogui.screenshot())) if sel]
         if chosen != [rows[i][0]]:
             _still_on_f8(f"after choosing '{canon}'")
@@ -6605,11 +6668,11 @@ def choose_bet_type(canon: str, extending: bool = False):
 
 
 STAKE_BOX_DIGITS = 8  # backspaces clearing the last stake (pence): up to £99,999.99 (5 cleared only £999.99; review R18)
-# Stake > 1 s > bet type > 1 s > whatever comes next (F11, F10, F12) (user, 1 Nov). Betty's bet edit went behind Home
-# on Choose Bet and Stake with 1.2.0's 0.1 s after the stake and 0.15 s after the bet type too (9.2460715, a Lucky 15,
-# 1.2.9), not only on forecasts.
-F8_AFTER_STAKE_SECS = 1.0
-F8_AFTER_BET_TYPE_SECS = 1.0
+# 1.2.0's waits after the stake and after the bet type again (1.2.14). 1.2.10 made each 1 s, taking Betty's bet edit
+# going behind Home as Betty being hurried; it was a tesseract.exe window taking the keyboard (1.2.12), and 1.2.12
+# placed a Lucky 15 and a Lucky 31 with the 1 s waits still in (1 Nov). About 1.75 s a bet back.
+F8_AFTER_STAKE_SECS = 0.1
+F8_AFTER_BET_TYPE_SECS = 0.15
 
 
 def enter_bet_terms(bet: dict, canon: str, bets_before: int, bet_no: int | None = None):
@@ -6669,7 +6732,7 @@ def bog_wanted(horse: dict, struck_clock: str | None) -> bool:
             and horse.get('category') != 'greyhound' and is_bog_eligible_selection(horse)[0])
 
 
-ORDERED_BET_TYPES = ('straight forecast', 'tricast')  # entered in the finishing order written
+ORDERED_BET_TYPES = ('straight forecast', 'tricast', 'straight forecast double')  # in the finishing order written
 
 
 def selection_key(h: dict) -> tuple[str, ...]:
@@ -6994,6 +7057,11 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
             else:
                 betty_press('f10')  # new betting slip
                 expect_screen({SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY}, doing="new betting slip (F10)")
+    if not test_mode_on.is_set():
+        # Live: F12 next (commit_wager), with nothing read first. Betty checks its total against the Payment itself at
+        # F12, and its question goes to staff (user, 1 Nov: ~1.5 s of reads before every F12, for the same check)
+        print("[+] Entered: Betty checks its total against the Payment at F12.")
+        return
     total = read_betslip_bets(pyautogui.screenshot())['payment_pence']
     if total != payment_pence:
         raise WagerForStaff(f"Betty's slip totals {'£%.2f' % (total / 100) if total is not None else 'unread'} "
@@ -7010,13 +7078,15 @@ def commit_wager(number: str, payment_pence: int) -> str:
     global _placing
     if test_mode_on.is_set():
         raise PlacingRefused(f"commit_wager({number}) called in test mode")
-    screen = detect_screen()
-    if screen not in (SCREEN_BET_AND_STAKE, SCREEN_UNKNOWN):  # the total below is read before F12 either way
-        raise NavError(f"not on Choose Bet and Stake to place wager {number} (Betty shows {screen})")
-    total = read_betslip_bets(pyautogui.screenshot())['payment_pence']
-    if total != payment_pence:  # last look, immediately before the key
-        raise WagerForStaff(f"Betty's slip totals {'£%.2f' % (total / 100) if total is not None else 'unread'} "
-                            f"but £{payment_pence / 100:.2f} was paid")
+    # Choose Bet and Stake told by its colours (~30 ms), then F12 at once. The screen's label and the total were read
+    # here (~0.6 s, and the total once before in enter_wager): Betty checks the total against the Payment itself, and
+    # its question after F12 goes to staff below (user, 1 Nov)
+    t0 = time.time()
+    while not _signals_pass(np.array(pyautogui.screenshot().convert('RGB')),
+                            SCREEN_SIGNATURES[SCREEN_BET_AND_STAKE]['colours']):
+        if time.time() - t0 > 1.0:
+            raise NavError(f"not on Choose Bet and Stake to place wager {number} (Betty shows {detect_screen()})")
+        time.sleep(0.05)
     refresh_watcher_hud(f"Placing wager {number} (F12)...")
     print(f"[*] Placing wager {number}: F12.")
     _placing = True
