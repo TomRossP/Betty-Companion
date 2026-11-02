@@ -6,8 +6,11 @@
 // 1.3.0: each till can be put in a shop on /admin. What staff teach a till (its lessons) is shared with the other
 // tills of its shop through /lessons/sync; a till in no shop keeps its own. Which shop is never told by the till: the
 // relay works it out from the till's pass, so a till only ever sees its own shop's lessons.
+// 1.4.0: each till's logs (session logs, the staff journal, the screens kept when a wager goes to staff) come up as
+// they grow (/logs/put), so the tills of a shop, and Claude on either of them, can read both tills' logs (/logs/list,
+// /logs/get). The same rule as lessons: a till sees its shop's tills' logs, or only its own when it is in no shop.
 
-const RELAY_VERSION = "1.3.0";
+const RELAY_VERSION = "1.4.0";
 const PAIRING_MINUTES = 10;        // a code not approved within this time expires
 const MAX_PENDING_PAIRINGS = 20;   // stops strangers filling the approval list
 const ADMIN_FAILS_PER_HOUR = 10;   // wrong admin passwords from one address before it is locked out for an hour
@@ -15,6 +18,10 @@ const GEMINI_SLOTS = { paid: "GEMINI_KEY_PAID", free1: "GEMINI_KEY_FREE_1", free
 const LESSONS_PER_SYNC = 500;      // most lessons one sync hands back (the till asks again for the rest)
 const LESSON_IMAGE_MAX = 1500000;  // a whole-slip lesson's picture, base64 characters
 const LESSON_KINDS = ["runner", "meeting", "wording", "slip"];
+const LOG_NAME = /^(session_\d{8}_\d{6}\.log|staff_journal\.jsonl|(staff|slip|reuse)_[\w.-]{1,80}\.png)$/;
+const LOG_CHUNK_MAX = 1000000;     // one upload, base64 characters (about 730 KB)
+const LOG_GET_CHUNKS = 4;          // chunks one /logs/get hands back (the till asks again for the rest)
+const LOG_KEEP_DAYS = 30;          // a log not added to for this long is dropped
 
 const enc = new TextEncoder();
 const now = () => Math.floor(Date.now() / 1000);
@@ -74,6 +81,11 @@ async function ensureSchema(db) {
       deleted INTEGER NOT NULL DEFAULT 0)`),
     db.prepare("CREATE INDEX IF NOT EXISTS lessons_scope ON lessons (scope, updated_at)"),
     db.prepare(`CREATE TABLE IF NOT EXISTS lesson_images (id TEXT PRIMARY KEY, scope TEXT NOT NULL, png TEXT NOT NULL)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS log_files (till_id TEXT NOT NULL, name TEXT NOT NULL,
+      size INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY (till_id, name))`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS log_chunks (till_id TEXT NOT NULL, name TEXT NOT NULL, start INTEGER NOT NULL,
+      length INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (till_id, name, start))`),
   ]);
   // 1.3.0: the tills' shop, added to a database made by an older relay (an error only says it's there already)
   try { await db.prepare("ALTER TABLE tills ADD COLUMN shop TEXT").run(); } catch (e) { /* already there */ }
@@ -233,6 +245,84 @@ async function lessonImage(request, env, till) {
   return row ? json({ png: row.png }) : relayError(404, "no picture for that lesson");
 }
 
+// --- Logs: each till's logs, read by the tills of its shop ---
+
+// The tills whose logs a till may read: its shop's (revoked ones too: their logs still tell what happened), or itself
+async function logTills(db, till) {
+  if (!till.shop) return [till];
+  return (await db.prepare("SELECT * FROM tills WHERE shop = ?").bind(till.shop).all()).results;
+}
+
+const base64Bytes = (s) => Math.floor(s.length * 3 / 4) - (s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0);
+
+// One piece of a log, from where the relay's copy ends ('start' = its size here). A piece that doesn't start there
+// is refused with the relay's size, and the till sends again from it, so a piece is never kept twice or skipped.
+// 'restart' with start 0: the till rewrote the log (the staff journal loses its old lines at start-up), so the copy
+// here starts again.
+async function logsPut(request, env, till) {
+  const body = await request.json().catch(() => ({}));
+  const name = String(body.name || ""), data = String(body.data || "");
+  const start = parseInt(body.start, 10);
+  if (!LOG_NAME.test(name)) return relayError(400, "not a log the relay keeps");
+  if (!(start >= 0) || !data || data.length > LOG_CHUNK_MAX || data.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
+    return relayError(400, `start and base64 data (at most ${LOG_CHUNK_MAX} characters) are required`);
+  }
+  const db = env.DB, t = now(), length = base64Bytes(data);
+  if (body.restart && start === 0) {
+    await db.batch([
+      db.prepare("DELETE FROM log_chunks WHERE till_id = ? AND name = ?").bind(till.id, name),
+      db.prepare("DELETE FROM log_files WHERE till_id = ? AND name = ?").bind(till.id, name),
+    ]);
+  }
+  const size = (await db.prepare("SELECT size FROM log_files WHERE till_id = ? AND name = ?")
+    .bind(till.id, name).first("size")) ?? 0;
+  if (start !== size) return json({ ok: false, size });
+  await db.batch([
+    db.prepare("INSERT OR REPLACE INTO log_chunks (till_id, name, start, length, data) VALUES (?, ?, ?, ?, ?)")
+      .bind(till.id, name, start, length, data),
+    db.prepare(`INSERT INTO log_files (till_id, name, size, started_at, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (till_id, name) DO UPDATE SET size = excluded.size, updated_at = excluded.updated_at`)
+      .bind(till.id, name, start + length, Date.now(), t),  // started_at in ms: a restart a second later still shows
+    db.prepare("UPDATE tills SET last_seen = ? WHERE id = ?").bind(t, till.id),
+  ]);
+  if (Math.random() < 0.02) {  // now and then, the logs nobody has added to for LOG_KEEP_DAYS go
+    const cutoff = t - LOG_KEEP_DAYS * 86400;
+    await db.batch([
+      db.prepare(`DELETE FROM log_chunks WHERE EXISTS (SELECT 1 FROM log_files f WHERE f.till_id = log_chunks.till_id
+        AND f.name = log_chunks.name AND f.updated_at < ?)`).bind(cutoff),
+      db.prepare("DELETE FROM log_files WHERE updated_at < ?").bind(cutoff),
+    ]);
+  }
+  return json({ ok: true, size: start + length });
+}
+
+// Every log of the till's shop added to in the last `days` (default and most LOG_KEEP_DAYS); 'mine' = this till's own,
+// 'started_at' = when the relay's copy began (a new one after a restart: a copy fetched before is out of date)
+async function logsList(request, env, till) {
+  const body = await request.json().catch(() => ({}));
+  const days = Math.min(Math.max(parseInt(body.days, 10) || LOG_KEEP_DAYS, 1), LOG_KEEP_DAYS);
+  const files = [];
+  for (const x of await logTills(env.DB, till)) {
+    const rows = (await env.DB.prepare(`SELECT name, size, started_at, updated_at FROM log_files WHERE till_id = ? AND updated_at > ?
+      ORDER BY updated_at`).bind(x.id, now() - days * 86400).all()).results;
+    for (const r of rows) files.push({ till_id: x.id, till: x.name, mine: x.id === till.id, ...r });
+  }
+  return json({ ok: true, shop: till.shop || "", files });
+}
+
+// A log's pieces from byte `from` on (the first may begin before it: the till skips what it has)
+async function logsGet(request, env, till) {
+  const body = await request.json().catch(() => ({}));
+  const tillId = String(body.till_id || ""), name = String(body.name || "");
+  if (!(await logTills(env.DB, till)).some((x) => x.id === tillId)) return relayError(404, "no such log for this till");
+  const from = Math.max(parseInt(body.from, 10) || 0, 0);
+  const chunks = (await env.DB.prepare(`SELECT start, length, data FROM log_chunks WHERE till_id = ? AND name = ?
+    AND start + length > ? ORDER BY start LIMIT ?`).bind(tillId, name, from, LOG_GET_CHUNKS).all()).results;
+  const size = (await env.DB.prepare("SELECT size FROM log_files WHERE till_id = ? AND name = ?")
+    .bind(tillId, name).first("size")) ?? 0;
+  return json({ ok: true, size, chunks });
+}
+
 // --- Admin: approve codes, revoke tills, set daily limits, put tills in shops ---
 
 async function adminCheck(request, env) {
@@ -266,7 +356,9 @@ async function adminApi(request, env, action) {
     const tills = (await db.prepare(`SELECT t.id, t.name, t.created_at, t.last_seen, t.daily_limit, t.active, t.shop,
       COALESCE(u.requests, 0) AS today,
       (SELECT COUNT(*) FROM lessons l WHERE l.deleted = 0 AND l.scope = CASE WHEN t.shop IS NOT NULL AND t.shop <> ''
-        THEN 'shop:' || t.shop ELSE 'till:' || t.id END) AS lessons
+        THEN 'shop:' || t.shop ELSE 'till:' || t.id END) AS lessons,
+      (SELECT COUNT(*) FROM log_files f WHERE f.till_id = t.id) AS logs,
+      (SELECT MAX(f.updated_at) FROM log_files f WHERE f.till_id = t.id) AS logs_at
       FROM tills t LEFT JOIN usage u ON u.till_id = t.id AND u.day = ?
       ORDER BY t.active DESC, t.shop, t.name`).bind(today()).all()).results;
     return json({ pending, tills, default_limit: defaultLimit(env), now: t });
@@ -380,7 +472,8 @@ async function load() {
     const who = el("div", null, "grow");
     who.append(el("strong", x.name + (x.active ? "" : " (revoked)")),
       el("div", "Today: " + x.today + " of " + limit + " reads" + (x.daily_limit == null ? " (default)" : "") + " · last used " + ago(x.last_seen), "hint"),
-      el("div", (x.shop ? "Shop: " + x.shop + " · lessons shared with its other tills: " : "In no shop · its own lessons: ") + x.lessons, "hint"));
+      el("div", (x.shop ? "Shop: " + x.shop + " · lessons shared with its other tills: " : "In no shop · its own lessons: ") + x.lessons, "hint"),
+      el("div", "Logs: " + x.logs + " file(s) · last added " + ago(x.logs_at), "hint"));
     c.append(who);
     if (x.active) {
       c.append(btn("Shop", async () => {
@@ -426,13 +519,16 @@ export default {
       if (path === "/pair/poll") return await pairPoll(request, env);
       if (path.startsWith("/admin/api/")) return await adminApi(request, env, path.slice("/admin/api/".length));
       const gemini = path.match(/^\/gemini\/(\w+)\/(.+)$/);
-      const tillPaths = ["/ping", "/lessons/sync", "/lessons/image"];
+      const tillPaths = ["/ping", "/lessons/sync", "/lessons/image", "/logs/put", "/logs/list", "/logs/get"];
       if (!gemini && !tillPaths.includes(path)) return relayError(404, "not found");
       const till = await tillFor(request, env);
       if (!till) return relayError(401, "this till is not paired, or its pass was revoked");
       if (path === "/ping") return await ping(env, till);
       if (path === "/lessons/sync") return await lessonsSync(request, env, till);
       if (path === "/lessons/image") return await lessonImage(request, env, till);
+      if (path === "/logs/put") return await logsPut(request, env, till);
+      if (path === "/logs/list") return await logsList(request, env, till);
+      if (path === "/logs/get") return await logsGet(request, env, till);
       return await proxyGemini(request, env, till, gemini[1], gemini[2]);
     } catch (e) {
       return relayError(500, "relay error: " + (e && e.message ? e.message : e));

@@ -12,8 +12,11 @@ lessons_sync.json.lock
 lessons_sync.json.tmp
 lessons/
 
-# Console logs (kept on each PC for 30 days)
+# Console logs (kept on each PC for 30 days), how much of them the relay has, and logs fetched from the relay
 logs/
+relay_logs.json
+relay_logs.json.tmp
+relay_logs/
 
 # Test material: real customer slips, Betty screenshots with wager numbers and payments, evaluation results
 scratch/

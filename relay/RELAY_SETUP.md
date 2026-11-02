@@ -118,6 +118,23 @@ change the address in the pairing box before pairing.
 
 ---
 
+## Updating the relay's code to 1.4.0 (both tills' logs)
+
+Relay **1.4.0** keeps a copy of each till's logs (Betty Companion 1.2.16): the session logs, the staff journal and
+the screens kept when a wager goes to staff. The tills of one shop can then read each other's logs, so Claude on
+either till can check both tills' logs and work out fixes. Without it everything else works the same; the logs stay on
+each till.
+
+1. Cloudflare dashboard: **Compute (Workers)**, then **Workers & Pages**, then `betty-relay`, then **Edit code**.
+2. Select everything (Ctrl+A) and delete it. Paste in all of `relay\worker.js` from this folder. Click **Deploy**.
+3. Open `/health`. It should say `"version":"1.4.0"`.
+4. Check on `/admin` that both tills are in the **same shop** (1.3.0's **Shop** button). A till in no shop only ever
+   sees its own logs.
+5. Within a few minutes of Betty Companion 1.2.16 running, each till's card on `/admin` says *Logs: N file(s) · last
+   added ...*.
+
+The relay adds its new tables by itself the first time it runs. Logs nobody has added to for 30 days are dropped.
+
 ## Updating the relay's code to 1.3.0 (sharing what staff teach)
 
 Relay **1.3.0** lets the tills of one shop share what staff have taught them (Betty Companion 1.2.0's Training tab).
@@ -192,6 +209,7 @@ shop share those lessons:
 | Replace a Gemini key | Worker, **Settings**, **Variables and Secrets**: edit the secret, then **Deploy**. The tills don't change at all. |
 | Change the admin password | Same place: edit `ADMIN_PASSWORD`, then **Deploy**. |
 | Put a till in a shop (or move it) | `/admin`, then **Shop** on that till. Empty = no shop. |
+| Get the other till's logs (1.4.0) | Manager till: `python relay_logs.py` puts them in `scratch\imported_logs\<till>\`. A till without Python: `BettyCompanion.exe --fetch-logs` puts them in `relay_logs\<till>\` next to the exe. Add `--all` for the till's own logs too. |
 | Locked out of `/admin` | Ten wrong passwords from one address lock that address out for an hour. Wait, or use another network (for example your phone's mobile data). |
 
 ## Good to know
@@ -205,5 +223,8 @@ shop share those lessons:
   counts, and (1.3.0) the lessons staff teach: words as written and what they mean, how often each was used, and for
   a slip taught as a worked example, that slip's picture and its lines. Delete a lesson on a till's Training tab and
   the relay deletes it (and its picture) too.
+- **From 1.4.0 it also keeps each till's logs for 30 days.** These do hold what customers bet: the session logs have
+  each slip as it was read, and the staff screens show Betty with the wager on it. Only the tills of the same shop can
+  read them, with their own passes; nobody else can, and they are never shown on `/admin`.
 - **The code is in this folder (`relay\worker.js`),** so it can go in the public GitHub repository safely: it contains
   no keys.

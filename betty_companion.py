@@ -1,4 +1,4 @@
-__version__ = "1.2.14"
+__version__ = "1.2.19"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -32,6 +32,7 @@ import threading
 import atexit
 import glob
 import shutil
+import stat
 import tempfile
 from difflib import SequenceMatcher
 from typing import Any
@@ -3799,6 +3800,7 @@ MODAL_LATE_SELECTION = "MODAL_LATE_SELECTION"  # red border: "Wager staked N min
 MODAL_PRICE = "MODAL_PRICE"                    # blue border: "The price you entered was not correct..." (Price when struck, else Override)
 MODAL_PAYMENT_MISMATCH = "MODAL_PAYMENT_MISMATCH"  # after F12, red: "Payment is not the same as on the original empty bet..."
 MODAL_CONFIRM_STAKE = "MODAL_CONFIRM_STAKE"        # after No on the above, blue: "Please confirm this is the stake tendered"
+MODAL_EDITED_ELSEWHERE = "MODAL_EDITED_ELSEWHERE"  # after End, red: "Bet is marked as in the process of being edited on Manager Terminal!" (Continue)
 SCREEN_BET_AND_STAKE = "BET_AND_STAKE"        # F8 "Choose Bet and Stake" (Place Bet / F12 lives here)
 SCREEN_UNKNOWN = "UNKNOWN"
 
@@ -3863,6 +3865,12 @@ MODAL_SIGNATURES = {
                     ((343, 300, 6, 230), (255, 0, 0), 0.8),
                     ((360, 310, 640, 140), (255, 255, 255), 0.8)],
         'label': ((380, 340, 620, 80), ("originalemptybet", "customeractuallygave")),
+    },
+    MODAL_EDITED_ELSEWHERE: {  # the same red box again: another till has the bet open to edit (9.2462767, 2 Nov)
+        'colours': [((350, 291, 665, 6), (255, 0, 0), 0.6),
+                    ((343, 300, 6, 230), (255, 0, 0), 0.8),
+                    ((360, 310, 640, 140), (255, 255, 255), 0.8)],
+        'label': ((380, 340, 620, 80), ("beingedited", "processofbeing")),
     },
     MODAL_CONFIRM_STAKE: {
         'colours': [((95, 177, 495, 6), (0, 0, 255), 0.4),         # blue top border
@@ -4411,6 +4419,7 @@ MODAL_BACK_OUT = {  # (button, the pop-up's box)
     MODAL_CONFIRM_STAKE: ("Cancel", (88, 177, 510, 370)),
     MODAL_PRICE: ("Cancel", (401, 289, 620, 340)),
     MODAL_LATE_SELECTION: ("No", (345, 291, 675, 250)),
+    MODAL_EDITED_ELSEWHERE: ("Continue", (345, 291, 675, 250)),
 }
 
 
@@ -4537,9 +4546,18 @@ def open_race_entry() -> str:
     """
     print(f"[*] Pressing End (Edit Empty Bet) on {detect_screen()}...")
     betty_press('end')
-    screen = expect_screen({SCREEN_EVENT_MENU, SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY_BROKEN},
-                           doing="Edit Empty Bet (End)")
+    screen = expect_screen({SCREEN_EVENT_MENU, SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY_BROKEN,
+                            MODAL_EDITED_ELSEWHERE}, doing="Edit Empty Bet (End)")
     print(f"[*] After End: {screen}")
+    if screen == MODAL_EDITED_ELSEWHERE:
+        # Another till is editing it. Before, End carried on under the pop-up and scanned a slip it half covered, then
+        # sent the wager to staff (9.2462767, 2 Nov). Continue, and leave it for now like a wager viewed elsewhere
+        label, region = MODAL_BACK_OUT[MODAL_EDITED_ELSEWHERE]
+        spot = find_button(pyautogui.screenshot(), label, region)
+        if not spot:  # the next wager would be clicked under the pop-up
+            raise NavError(f"another terminal is editing the bet, and the pop-up's '{label}' wasn't found")
+        betty_click(*spot)
+        raise WagerOpenElsewhere("another terminal is editing it")
     if screen in (SCREEN_EVENT_MENU, SCREEN_UNKNOWN):  # End always opens the event menu
         entry = {SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY_BROKEN}
         for attempt in range(1, 4):
@@ -4555,7 +4573,13 @@ def open_race_entry() -> str:
         raise SlipNotShowing("Betty opened the bet in its broken state (no slip image)")
     if screen == SCREEN_RACE_ENTRY:
         betty_press('/')  # '/' toggles the time box: pressed once, then checked
-        screen = expect_screen({SCREEN_RACE_ENTRY_READY}, doing="time box ('/')")
+        screen = wait_for_screen({SCREEN_RACE_ENTRY_READY})
+        box_open = _signals_pass(np.array(pyautogui.screenshot().convert('RGB')), [RACE_ENTRY_TIME_BOX])
+        if screen != SCREEN_RACE_ENTRY_READY and not (screen == SCREEN_UNKNOWN and box_open):
+            # Betty now and then shows something else where the time box should be; Tab brings the box up (user, 2 Nov)
+            print(f"[*] Time box ('/'): Betty shows {screen}, not the time box; pressing Tab and checking again.")
+            betty_press('tab')
+            screen = expect_screen({SCREEN_RACE_ENTRY_READY}, doing="time box ('/', then Tab)")
     return screen
 
 
@@ -5344,14 +5368,11 @@ def save_reuse_picture(number: str | None) -> str | None:
         os.makedirs(log_dir, exist_ok=True)
         path = os.path.join(log_dir, f"reuse_{number or 'unknown'}_{time.strftime('%Y%m%d_%H%M%S')}.png")
         pyautogui.screenshot().save(path)
-        shots = sorted((f for f in os.listdir(log_dir) if f.startswith("reuse_") and f.endswith(".png")),
-                       key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
-        for old in shots[:-REUSE_SHOTS_KEPT]:
-            os.remove(os.path.join(log_dir, old))
-        return path
     except Exception as e:
         print(f"[-] Could not save the panel's picture: {e}")
         return None
+    remove_oldest(glob.glob(os.path.join(log_dir, "reuse_*.png")), REUSE_SHOTS_KEPT)
+    return path
 
 
 def find_reuse_row(rows: list[dict], horse: dict, order: int | None = None, entered: int | None = None) -> dict | None:
@@ -7318,7 +7339,11 @@ def watcher_process_wager(row: int, number: str):
                             f"Payment {'£%.2f' % (pay / 100) if pay is not None else 'unread'})")
     refresh_watcher_hud(f"Wager {number}: struck {details['struck_time']}, Payment £{pay / 100:.2f}. Opening race entry...")
     _wager_opened = True  # End is pressed next: from here Esc or a failure leaves the wager for staff (a pause doesn't)
-    open_wager_slip(number)
+    try:
+        open_wager_slip(number)
+    except WagerOpenElsewhere:
+        _current_wager, _wager_opened = None, False  # not ours to touch: no clean-up, no staff alert
+        raise
     slip = lock_wager(number, details)
     n_sel = len({(h.get('name'), h.get('time')) for b in slip for h in b.get('horses', [])})
     summary = f"{number}: {n_sel} selection(s), {len(slip)} bet(s), £{pay / 100:.2f}"
@@ -7335,6 +7360,51 @@ def watcher_process_wager(row: int, number: str):
         _lessons_outcome(placed=True)
     _wagers_left_for_staff.add(number)
     _current_wager = None
+
+
+_removal_failed: set[str] = set()  # old pictures that couldn't be removed this session (each reported once)
+
+
+def _mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _file_flags(path: str) -> str:
+    """The Windows attributes that can stop a file being removed, for the log."""
+    try:
+        attrs = os.stat(path).st_file_attributes
+    except (OSError, AttributeError):
+        return "attributes unread"
+    flags = [name for name, bit in (("read-only", stat.FILE_ATTRIBUTE_READONLY), ("hidden", stat.FILE_ATTRIBUTE_HIDDEN),
+                                    ("system", stat.FILE_ATTRIBUTE_SYSTEM)) if attrs & bit]
+    return ", ".join(flags) or "not read-only"
+
+
+def remove_oldest(paths: list[str], keep: int):
+    """
+    Removes all but the newest `keep` of `paths`, each on its own: one that can't be removed is skipped (reported once)
+    instead of stopping the rest, and a read-only one is made writable first. Never raises. On the cashier till one old
+    picture couldn't be removed from 2 Nov 15:59; the removal shared the save's `try`, so every staff screen after it
+    was reported unsaved, left out of the staff journal, and nothing older was tidied.
+    """
+    paths = sorted(paths, key=_mtime)
+    for path in paths[:max(0, len(paths) - keep)]:
+        try:
+            try:
+                os.remove(path)
+            except PermissionError:
+                os.chmod(path, stat.S_IWRITE)
+                os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            if path not in _removal_failed:
+                _removal_failed.add(path)
+                print(f"[-] Could not remove the old picture {os.path.basename(path)} ({_file_flags(path)}): {e}. "
+                      f"Skipped; the rest are tidied.")
 
 
 STAFF_SCREENSHOTS_KEPT = 20  # newest kept in logs/ (no image folder of their own)
@@ -7377,12 +7447,7 @@ def prune_staff_records():
         pass
     except Exception as e:
         print(f"[-] Could not tidy the staff journal: {e}")
-    try:
-        slips = sorted(glob.glob(os.path.join(log_dir, "slip_*.png")), key=os.path.getmtime)
-        for old in slips[:-SLIP_IMAGES_KEPT]:
-            os.remove(old)
-    except Exception:
-        pass
+    remove_oldest(glob.glob(os.path.join(log_dir, "slip_*.png")), SLIP_IMAGES_KEPT)
 
 
 def save_slip_image(img_str: str | None, number: str | None) -> str | None:
@@ -7411,14 +7476,11 @@ def save_staff_screenshot(number: str) -> str | None:
         path = os.path.join(log_dir, f"staff_{number}_{time.strftime('%Y%m%d_%H%M%S')}.png")
         pyautogui.screenshot().save(path)
         print(f"[*] Screen saved for staff: {path}")
-        shots = sorted((f for f in os.listdir(log_dir) if f.startswith("staff_") and f.endswith(".png")),
-                       key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
-        for old in shots[:-STAFF_SCREENSHOTS_KEPT]:
-            os.remove(os.path.join(log_dir, old))
-        return path
     except Exception as e:
         print(f"[-] Could not save the staff screenshot: {e}")
         return None
+    remove_oldest(glob.glob(os.path.join(log_dir, "staff_*.png")), STAFF_SCREENSHOTS_KEPT)
+    return path
 
 
 # --- Live capture for the tests: each decision the program takes from Betty's screen (the race on top of the runner
@@ -7485,9 +7547,7 @@ def _corpus_writer():
                 f.write(json.dumps(item, default=str) + "\n")
             written += 1
             if written % 100 == 0:
-                pics = sorted(glob.glob(os.path.join(corpus_dir(), "*", "*.png")), key=os.path.getmtime)
-                for old in pics[:-CORPUS_KEPT]:
-                    os.remove(old)
+                remove_oldest(glob.glob(os.path.join(corpus_dir(), "*", "*.png")), CORPUS_KEPT)
         except Exception:
             pass
 
@@ -7561,7 +7621,7 @@ def watcher_cycle():
         except WagerOpenElsewhere as e:  # another till has it: leave it alone, next wager on the ladder
             _open_elsewhere_until[number] = time.time() + OPEN_ELSEWHERE_RETRY_SECS
             print(f"[*] Wager {number}: {e}. Moving on to the next wager; will look again in {OPEN_ELSEWHERE_RETRY_SECS}s.")
-            STATUS_HUD.set_outcome(f"{number} open on {e} - skipped for now {time.strftime('%H:%M')}")
+            STATUS_HUD.set_outcome(f"{number}: {e} - skipped for now {time.strftime('%H:%M')}")
     busy = sum(1 for n in queue if _open_elsewhere_until.get(n, 0) > time.time())
     msg = "No unedited wagers. " if not queue else (
         f"No wager to do now ({busy} open on another till, {len([n for n in queue if n in _wagers_left_for_staff])} left for staff). ")

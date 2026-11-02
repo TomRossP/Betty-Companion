@@ -413,6 +413,144 @@ class BettyOffTimes:
         return runners
 
 
+RESULT_FIRST_CODE = 16  # SETTDATA's RP1: 16 = 1st, 17 = 2nd, 18 = 3rd ...
+RESULTS_READ_BACK = 2000  # records read back at a time to find the start of the day
+RESULTS_MOST_PLACES = 5  # the Runners tab shows 1st to 5th (user, 2 Nov)
+
+
+def _sp_text(num: str, den: str) -> str:
+    """'11/4' from Betty's '11', '4'; Evs for 1/1; '' when there's no SP (0/0)."""
+    if not (num.isdigit() and den.isdigit()) or not int(num) or not int(den):
+        return ""
+    return "Evs" if num == den else f"{int(num)}/{int(den)}"
+
+
+def _same_name(result: str, card: str) -> bool:
+    """A result's name is the card's: the same letters, or the start of them when Betty cut the result's short."""
+    a, b = re.sub(r"[^a-z0-9]", "", result.lower()), re.sub(r"[^a-z0-9]", "", card.lower())
+    return bool(a) and (a == b or (len(a) >= 10 and b.startswith(a)))
+
+
+def decode_placings(rp1: str) -> list[dict]:
+    """
+    The runners placed in one race, from SETTDATA's RP1 memo: '16/0/0/0/0/<SP num>/<SP den>/<cloth>|<name>|17/...|'
+    then the favourites' SPs. [{place, cloth, name, sp, dead_heat}] in finishing order; two runners with the same
+    place code dead-heated.
+    """
+    parts = rp1.split("|")
+    placed = []
+    for code, name in zip(parts[0::2], parts[1::2]):
+        bits = code.split("/")
+        if len(bits) != 8 or not all(b.isdigit() for b in bits) or int(bits[0]) < RESULT_FIRST_CODE:
+            continue
+        placed.append({"place": int(bits[0]) - RESULT_FIRST_CODE + 1, "cloth": int(bits[7]), "name": name.strip(),
+                       "sp": _sp_text(bits[5], bits[6])})
+    for p in placed:
+        p["dead_heat"] = sum(q["place"] == p["place"] for q in placed) > 1
+    return placed
+
+
+class BettyResults:
+    """
+    The day's race results as Betty settled them, from SETTDATA.DBF ({event id: decode_placings}). One row per event
+    settled, EVENTID = the feed's event id (146 of 146 placings matched the card by cloth and name, 1 Nov); the
+    placings are in memo RP1 of SETTDATA.fpt. RP1's SPs are the starting prices (Southwell 17:30, 17 Oct, as
+    published); FSPRICES holds other prices. Some races list only the places paid, others the whole field. Rows
+    are added as races are settled but a resettled race is rewritten in place, so the day's rows are read again at
+    every look. results.dbf, despite its name, only lists the races and their off times. Any problem reading it
+    gives no results.
+    """
+
+    def __init__(self, dbf_dir: str | None = None, day: datetime.date | None = None):
+        self._dbf_dir = dbf_dir
+        self.fixed_day = day
+        self._day = ""
+        self._start = 0  # the day's first record, found once a day
+        self._reported = ""
+
+    @property
+    def path(self) -> str:
+        return os.path.join(self._dbf_dir or dbf_folder(), "SETTDATA.DBF")
+
+    def refresh(self, event_ids: set[int] | None = None) -> dict[int, list[dict]]:
+        """The day's results, only for `event_ids` when given (the memos are read for those alone)."""
+        day = (self.fixed_day or datetime.date.today()).strftime("%Y%m%d")
+        if day != self._day:
+            self._day, self._start = day, 0
+        results: dict[int, list[dict]] = {}
+        try:
+            with open(self.path, "rb") as f, open(os.path.splitext(self.path)[0] + ".fpt", "rb") as memos:
+                n, header_len, rec_len = struct.unpack_from("<IHH", f.read(12), 4)
+                f.seek(32)
+                fields, pos = {}, 1
+                while (desc := f.read(32)) and desc[0] != 0x0D:
+                    fields[desc[:11].split(b"\0")[0].decode("latin-1").upper()] = (pos, desc[16])
+                    pos += desc[16]
+                memos.seek(6)
+                block = struct.unpack(">H", memos.read(2))[0]
+
+                def get(rec: bytes, name: str) -> str:
+                    at, size = fields[name]
+                    return rec[at: at + size].decode("latin-1").strip()
+
+                def memo(rec: bytes, name: str) -> str:
+                    at, size = fields[name]
+                    raw = rec[at: at + size]
+                    first = struct.unpack("<I", raw)[0] if size == 4 else int(raw.strip() or 0)  # VFP binary / ASCII
+                    if not first:
+                        return ""
+                    memos.seek(first * block)
+                    length = struct.unpack(">I", memos.read(8)[4:])[0]
+                    return memos.read(min(length, 65536)).decode("latin-1")
+
+                if self._start > n:  # the table was packed: find the day again
+                    self._start = 0
+                start = self._start
+                if not start:  # back to the first record of the day: rows go in as events are first settled
+                    start = n
+                    while start > 0:
+                        start = max(0, start - RESULTS_READ_BACK)
+                        f.seek(header_len + start * rec_len)
+                        date = get(f.read(rec_len), "LASTDATE")
+                        if date and date < day:
+                            break
+                    self._start = start
+                f.seek(header_len + start * rec_len)
+                blob = f.read((n - start) * rec_len)
+                for i in range(0, len(blob) - rec_len + 1, rec_len):
+                    rec = blob[i: i + rec_len]
+                    event = get(rec, "EVENTID")
+                    if rec[0:1] == b"*" or get(rec, "LASTDATE") != day or not event.isdigit():
+                        continue
+                    if event_ids is not None and int(event) not in event_ids:
+                        continue
+                    placed = decode_placings(memo(rec, "RP1"))
+                    if placed:
+                        results[int(event)] = placed
+        except (OSError, KeyError, ValueError, struct.error) as e:
+            if self._reported != str(e):
+                self._reported = str(e)
+                print(f"[-] Betty results: could not read {self.path} ({e}).")
+            return {}
+        return results
+
+    def mark(self, runners: list[dict], most: int = RESULTS_MOST_PLACES) -> list[dict]:
+        """
+        Gives each runner its finishing place ('place', 1 to `most`, None when unplaced or not settled yet), its SP
+        when placed ('sp') and whether it dead-heated ('dead_heat'). Found by cloth number when the names agree
+        (Betty cuts long names short: "The Days Are Go'"), else by name; a placing that agrees with neither is left off.
+        """
+        results = self.refresh({r["event_id"] for r in runners if r.get("event_id")})
+        for r in runners:
+            placed = [p for p in results.get(r.get("event_id"), ()) if p["place"] <= most]
+            hit = (next((p for p in placed if p["cloth"] == r.get("number") and _same_name(p["name"], r["name"])), None)
+                   or next((p for p in placed if _same_name(p["name"], r["name"])), None))
+            r["place"] = hit["place"] if hit else None
+            r["sp"] = hit["sp"] if hit else ""
+            r["dead_heat"] = bool(hit and hit["dead_heat"])
+        return runners
+
+
 RACING_SPORTS = {"HORSE": "Horses", "AHORSES": "Horses", "DOG": "Greyhounds", "ADOGS": "Greyhounds"}
 REGION_ORDER = ("UK/IRE", "Australia", "International", "Virtual")
 

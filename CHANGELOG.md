@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.19] - 2026-11-02
+
+### Fixed
+- **Staff screens reported unsaved, and left out of the staff journal** (cashier till, from 2 Nov 15:59): the till couldn't remove its oldest picture ("Access is denied" on `staff_9.2458333_20261030_174212.png` and `reuse_9.2460806_20261101_135651.png`). The removal was inside the same `try` as the save, so every screen saved after it was reported as not saved: the journal got `"screenshot": null` (9.2462767 has no screen in the window), and nothing older was tidied (31 staff screens kept where 20 should be). Tidying is now `remove_oldest`, run after the save: each old picture is removed on its own, a read-only one is made writable first (a read-only file gives exactly that "WinError 5"), and one that still can't go is skipped (reported once, with its attributes) while the rest are tidied. The same for the panel pictures, the slip images and the corpus.
+- Closing the window while the program stopped raised a Tkinter error in the background: the window was redrawn after it had been destroyed.
+
+### Changed
+- **Runners tab: 1st, 2nd and 3rd in bold gold, silver and bronze** (user, 2 Nov), both horses of a dead heat in their place's colour. 4th and 5th stay plain. Before, only the winner was marked, in green.
+- `review_fixes_cases.py`: tidying with a read-only oldest picture and one held open; the save still returns its path. `launcher_cases.py` 4: the medal colours, bold.
+
+## [1.2.18] - 2026-11-02
+
+### Fixed
+- **A wager another till is editing went to staff** (9.2462767, 2 Nov): End brought up Betty's red pop-up "Bet is marked as in the process of being edited on Manager Terminal!". It wasn't recognised, so the program carried on, pressed '1' and scanned the slip the pop-up half covered (it read only "645 C" and "1"), then sent the wager to staff. The pop-up is now recognised (`MODAL_EDITED_ELSEWHERE`, by the red box and its words): **Continue** is clicked where its label is read, and the wager is skipped and looked at again in 30 s, like a wager another till is viewing. Nothing goes to staff. If Continue can't be found, nothing more is clicked and the program backs out as for any navigation problem. Backing out (`go_home`) answers the pop-up with Continue too.
+
+### Changed
+- **Start stays grey until the light at the bottom says Ready** (user, 2 Nov). Before, Start asked "Not ready to automate... Start anyway?". It follows the light every 5 seconds. A program that stopped with an error can still be started again.
+- `nav_cases.py` 8: the pop-up read on screen 57 (the saved screen of 9.2462767); End -> pop-up -> Continue, no '1', no scan, skipped. `launcher_cases.py` 4: Start grey and doing nothing while Not ready, back on when Ready.
+
+## [1.2.17] - 2026-11-02
+
+### Fixed
+- **"time box ('/'): expected RACE_ENTRY_READY"**: Betty now and then shows something else after '/' where the yellow time box should be (user, 2 Nov). `open_race_entry` now presses **Tab** once and checks again, which brings the time box up; only if it still isn't there does the wager stop as before. Not pressed when the screen isn't recognised but the yellow box is plainly showing.
+
+## [1.2.16] - 2026-11-02
+
+Both tills' logs on the relay, so either till, and Claude on either of them, can read them and work out fixes (user, 2 Nov). Needs relay **1.4.0**: paste the new `relay\worker.js` into the Worker (RELAY_SETUP.md). Until then the tills keep their logs as before and the window says the relay needs updating.
+
+### Added
+- **Each till uploads its logs** (`relay_logs.upload`, from the window every 2 minutes, built program on a paired till only): the session logs, `staff_journal.jsonl` and the screens kept for staff (`staff_*.png`, `slip_*.png`, `reuse_*.png`) written in the last 14 days. A log goes up as it grows, from where the relay's copy ends (pieces of 700 KB); the staff journal, rewritten at start-up without its old lines, is seen by its first bytes and sent again whole. The corpus and `f8_` folders stay on the till. System > Settings says when the logs last went up, or why not.
+- **Fetching the other tills' logs** (read only, with the till's own pass): `python relay_logs.py` on the manager till puts the cashier till's logs in `scratch\imported_logs\<till>\`, where `live_report.py` already looks; `BettyCompanion.exe --fetch-logs` does the same on a till without Python, into `relay_logs\<till>\` next to the exe (the result in `relay_logs\fetch.txt`). `--all` adds the till's own; `--to <folder>` puts them elsewhere. Each log is fetched from where the copy there ends; a log the till rewrote is fetched again.
+- **Relay 1.4.0** (`relay\worker.js`): `/logs/put`, `/logs/list`, `/logs/get`. A till reads the logs of its shop's tills, or only its own when in no shop (as for lessons). A piece that doesn't start where the relay's copy ends is refused with the relay's size, so nothing is kept twice or skipped. Logs not added to for 30 days are dropped. `/admin` shows each till's log count and when it last added one.
+- `scratch/test_relay_logs.py` (in `run_all_tests.py`, needs Node.js): worker.js run locally with three tills in two shops: upload and fetch byte for byte (a £, a ✓ and a PNG), the other shop shut out, only new lines both ways, a log in pieces, the journal rewritten, the till's record of what's sent lost, refusals, an unpaired till, nothing sent from the source folder.
+
+## [1.2.15] - 2026-11-02
+
+Race results on the Runners tab (user, 2 Nov). Betty keeps them in `C:\DBF\SETTDATA.DBF`, one row per event settled, with the placings in the memo `RP1` of `SETTDATA.fpt`. `results.dbf`, despite its name, only lists the races and their off times.
+
+### Added
+- **Result and SP columns on the Runners tab**: 1st to 5th as far as Betty has them (some races list only the places paid, others the whole field), with each placed runner's SP. Dead heats show as `1st dh`. The winner is green; a placed runner stays dark when its race is off. The count says how many races have results. Read again with the rest of the tab (every minute and on Refresh).
+- `betty_feed.BettyResults` and `decode_placings`: today's rows of SETTDATA.DBF (found once a day, read again at every look, as a resettled race is rewritten in place), memos read only for the races on the card. Runners are found by event id and cloth number when the names agree, else by name; Betty cuts long names to 16 characters ("The Days Are Go'"). Any problem reading gives no results.
+- Checked against Betty's own tables: all 146 placings of 1 Nov's 36 UK & Irish races matched the card by cloth and name. RP1's SPs are the starting prices (Southwell 17:30, 17 Oct, as published: 11/4, 7/4 fav, 10/1); FSPRICES holds other prices. Live, Plumpton 13:00 today appeared about 20 minutes after the off, in full (4 of 4).
+- `launcher_cases.py` 2b: a stand-in SETTDATA.DBF/.fpt (1st to 5th, Evs, a name cut short, a dead heat, a wrong name at a cloth, deleted and yesterday's rows, no table), Betty's real results for 1 Nov, and the Runners tab's columns and colours.
+
 ## [1.2.14] - 2026-11-01
 
 1.2.13 placed 9.2460882 (7 bets, 10 selections from the previous-selections panel) but slowly (user, 1 Nov): the OCR, each panel click, and above all the wait between the bet going in and F12. Measured on the saved screens: a read takes ~145 ms, of which ~140 ms is starting tesseract.exe (a blank picture takes as long); the panel's 3 rows took 0.95 s as 6 reads; F12 waited 1 s, then a read of the screen and two reads of the total (~1.5 s). The same wager's reversed forecast double sent 9.2460746 to staff every time.

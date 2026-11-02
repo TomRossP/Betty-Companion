@@ -37,18 +37,22 @@ from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 import app_paths
 import lessons
+import relay_logs
 
 WINDOW_TITLE = "Betty Companion"
 REQUIRED_SCREEN = (1366, 768)
 GEMINI_CHECK_SECS = 300   # the free Gemini check, every 5 minutes (and on a click)
 DATA_REFRESH_SECS = 60    # racecards, meetings and runners
 LESSON_SYNC_SECS = 60     # what staff taught, shared with the shop's other tills (lessons.sync)
+LOG_UPLOAD_SECS = 120     # this till's new log lines and staff screens, to the relay (relay_logs.upload)
 HEALTH_SECS = 5           # the ready light
 LOG_TAIL_SECS = 1.5
 STOP_WAIT_SECS = 15       # Stop: the program gets this long to finish before it is ended
 CREATE_NO_WINDOW = 0x08000000
 
 GREEN, RED, AMBER, GREY = "#2E7D32", "#C62828", "#F9A825", "#78909C"
+# Runners tab: place -> (tag, colour), darkened enough to read on white. Dead heats take their place's colour
+MEDALS = {1: ("gold", "#B8860B"), 2: ("silver", "#7B8287"), 3: ("bronze", "#A0612B")}
 LIVE_COLOUR, TEST_COLOUR = "#E65100", "#4A148C"  # the overlay's colours: orange = live, purple = test
 BAR_BG = "#263238"
 SWITCH_OFF = "#B0BEC5"
@@ -145,11 +149,13 @@ def meeting_groups(meetings: list[dict]) -> dict[str, list[dict]]:
 
 
 class RacecardReader:
-    """Keeps one feed reader and one off-time reader, so each refresh only re-reads what Betty has changed."""
+    """Keeps one feed reader, one off-time reader and one results reader, so each refresh only re-reads what Betty
+    has changed."""
 
     def __init__(self):
         self.card = None
         self.offs = None
+        self.results = None
 
     def uk_irish_runners(self) -> list[dict]:
         import betty_feed
@@ -157,11 +163,13 @@ class RacecardReader:
             from meetings_manager import meetings_manager
             self.card = betty_feed.BettyFeedCard(category_resolver=lambda m: meetings_manager.resolve_meeting(m)[0])
             self.offs = betty_feed.BettyOffTimes()
+            self.results = betty_feed.BettyResults()
         runners = [dict(r) for r in self.card.get_runners() if r.get("category") == "domestic"]
-        try:
-            self.offs.mark(runners)
-        except Exception:
-            pass
+        for reader in (self.offs, self.results):
+            try:
+                reader.mark(runners)
+            except Exception:
+                pass
         return sorted(runners, key=lambda r: (r["minutes"], r["meeting"], r["number"]))
 
     def read(self) -> dict:
@@ -406,7 +414,8 @@ HELP = [
     ("Starting each day", [
         "- Make sure Betty is open and logged in.",
         "- Double-click BettyCompanion.exe. This window opens.",
-        "- Wait for the light at the bottom to say Ready (green). If it says Not ready, point at it to see why.",
+        "- Wait for the light at the bottom to say Ready (green); Start stays grey until it does. If it says Not "
+        "ready, point at it to see why.",
         "- Press Start. The window steps aside so Betty is in front, and an orange box in the bottom corner of "
         "Betty shows what it is doing.",
     ]),
@@ -453,7 +462,8 @@ HELP = [
     ("The other tabs", [
         "- Data: today's racecard files from Betty and every meeting, with its country's flag. Refresh reads them again.",
         "- Runners: every UK and Irish horse runner today. Find and Meeting narrow the list; races already off show "
-        "the time they went off, to the second.",
+        "the time they went off, to the second. Once Betty has the result, 1st, 2nd and 3rd show in bold gold, silver "
+        "and bronze, with their SP.",
         "- System: Log (what it has done, line by line), Errors, Staff entries, Training (what it has learned), and "
         "Settings (pairing the till).",
     ]),
@@ -688,6 +698,7 @@ class App:
         self.start_when_ready = False
         self.closing = False
         self.fatal = ""
+        self.start_blockers = ["still checking"]  # why the light isn't Ready: Start stays grey until it is (user, 2 Nov)
         self.gemini = {"ok": None, "text": "checking..."}
         self.gemini_busy = False
         self.data: dict = {}
@@ -847,6 +858,33 @@ class App:
         self.pair_btn.pack(side="left")
         self.unpair_btn = RoundButton(actions, "Unpair", self.on_unpair)
         self.unpair_btn.pack(side="left", padx=6)
+        self.logs_status = ttk.Label(relay, text="", foreground="#546E7A", wraplength=780, justify="left")
+        self.logs_status.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        self.logs_uploading = False
+        self.show_logs_state(relay_logs.state())
+        self.root.after(5000, self.upload_logs)
+
+    def upload_logs(self, again: bool = True):
+        """This till's new log lines and staff screens to the relay, on a background thread (relay_logs.upload), so
+        both tills' logs can be read from either till. `again`: every LOG_UPLOAD_SECS from now."""
+        if not self.logs_uploading:
+            self.logs_uploading = True
+            threading.Thread(target=lambda: self.inbox.put({"event": "_logs", "state": relay_logs.upload()}),
+                             daemon=True).start()
+        if again and not self.closing:
+            self.root.after(LOG_UPLOAD_SECS * 1000, self.upload_logs)
+
+    def show_logs_state(self, state: dict):
+        if not app_paths.is_frozen():
+            text = "Logs: only the built program sends this till's logs to the relay."
+        elif state.get("error"):
+            text = f"Logs: not sent to the relay just now ({state['error']}). They're still kept on this till."
+        elif state.get("last_upload"):
+            text = (f"Logs: copied to the relay (last at {state['last_upload'][-5:]}), so both tills' logs can be "
+                    "checked from either till.")
+        else:
+            text = "Logs: copied to the relay once this till is paired."
+        self.logs_status.configure(text=text)
 
     def _tree(self, parent, columns: list[tuple[str, str, int]], height: int = 10, picture_first: bool = False
               ) -> ttk.Treeview:
@@ -998,9 +1036,13 @@ class App:
         self.runner_count = ttk.Label(top, text="", foreground="#546E7A")
         self.runner_count.pack(side="right")
         self.runner_tree = self._tree(tab, [("time", "Time", 60), ("meeting", "Meeting", 160), ("number", "No.", 50),
-                                            ("runner", "Runner", 260), ("off", "Off", 120)], height=20)
+                                            ("runner", "Runner", 260), ("result", "Result", 70), ("sp", "SP", 60),
+                                            ("off", "Off", 120)], height=20)
         self.runner_tree.frame.pack(fill="both", expand=True, pady=(6, 0))
         self.runner_tree.tag_configure("off", foreground="#90A4AE")
+        self.runner_tree.tag_configure("placed", foreground="#263238")  # a race that's off, but this runner placed
+        for tag, colour in MEDALS.values():  # 1st, 2nd, 3rd in bold gold, silver, bronze (user, 2 Nov)
+            self.runner_tree.tag_configure(tag, foreground=colour, font=("Segoe UI", 9, "bold"))
 
     def _build_training(self, inner: ttk.Notebook):
         """System > Training: everything staff have taught this installation (lessons.json), what each has done, and
@@ -1344,6 +1386,8 @@ class App:
             self._step_aside()
         elif kind == "exited":
             self._on_exit(ev)
+            if self.closing:
+                return  # the window was destroyed: nothing left to show
         elif kind == "_gemini":
             self.gemini_busy = False
             self.gemini = ev
@@ -1357,6 +1401,9 @@ class App:
             self.show_ready()
         elif kind == "_pairing":
             self._pairing_update(ev)
+        elif kind == "_logs":
+            self.logs_uploading = False
+            self.show_logs_state(ev.get("state") or {})
         elif kind == "_lessons":
             self.lessons_syncing = False
             self.show_sharing(ev.get("state") or {})
@@ -1401,9 +1448,7 @@ class App:
     def on_start(self):
         if self.state in ("loading", "stopping"):
             return
-        reasons = self.not_ready_reasons(ignore_program=True)
-        if reasons and not messagebox.askyesno(WINDOW_TITLE, "Not ready to automate:\n\n- " + "\n- ".join(reasons)
-                                               + "\n\nStart anyway?", icon="warning"):
+        if self.start_blockers:  # the button is grey then; never started on a Not ready light (user, 2 Nov)
             return
         if self.backend.alive() and self.state == "ready":
             self._go()
@@ -1501,7 +1546,8 @@ class App:
         self.info["wager"].configure(text=(w.get("wager") or "none") if alive else "")
         if not alive and self.state == "stopped":
             self.info["reader"].configure(text=self.info["reader"].cget("text") or "Shown when the program starts")
-        self.start_btn.configure(state="normal" if self.state in ("stopped", "ready") else "disabled")
+        self.start_btn.configure(state="normal" if self.state in ("stopped", "ready") and not self.start_blockers
+                                 else "disabled")
         self.pause_btn.configure(state="normal" if alive and self.state == "ready" else "disabled")
         self.stop_btn.configure(state="normal" if alive and self.state != "stopping" else "disabled")
         self.mode_switch.set(not self.want_test)
@@ -1539,10 +1585,11 @@ class App:
             self.root.after(HEALTH_SECS * 1000, self.check_health)
 
     def show_ready(self):
-        try:
-            reasons = self.not_ready_reasons()
+        try:  # a program that stopped can be started again, so its error doesn't keep Start grey
+            self.start_blockers = self.not_ready_reasons(ignore_program=True)
         except Exception as e:
-            reasons = [f"check failed: {e}"]
+            self.start_blockers = [f"check failed: {e}"]
+        reasons = ([self.fatal] if self.fatal else []) + self.start_blockers
         self.ready_detail = "Not ready to automate:\n- " + "\n- ".join(reasons) if reasons else ""
         if reasons:
             self._dot(self.ready_dot, RED)
@@ -1551,6 +1598,7 @@ class App:
             self._dot(self.ready_dot, GREEN)
             on = self.backend.alive() and self.watcher.get("watcher")
             self.ready_text.configure(text="Running" if on else "Ready")
+        self._show_program()  # Start follows the light
 
     def check_gemini(self, force: bool = False):
         if not self.gemini_busy:
@@ -1936,12 +1984,25 @@ class App:
             # To the second, as Betty's off slip has it (user, 31 Oct: the minute isn't enough)
             secs = round(off * 60) if off is not None else 0
             off_text = f"off {secs // 3600:02d}:{secs // 60 % 60:02d}:{secs % 60:02d}" if off is not None else ""
-            tree.insert("", "end", values=(r["time_str"], r["meeting"], r["number"], r["name"], off_text),
-                        tags=("off",) if off is not None else ())
+            place = r.get("place")
+            tags = ((MEDALS[place][0],) if place in MEDALS else ("placed",) if place
+                    else ("off",) if off is not None else ())
+            tree.insert("", "end", values=(r["time_str"], r["meeting"], r["number"], r["name"], place_text(r),
+                                           r.get("sp", ""), off_text), tags=tags)
             shown += 1
         races = len({(r["meeting"], r["time_str"]) for r in runners})
+        settled = len({(r["meeting"], r["time_str"]) for r in runners if r.get("place")})
         self.runner_count.configure(text=f"{shown} shown of {len(runners)} UK & Irish horse runners in {races} races "
-                                         f"at {len(meetings)} meetings")
+                                         f"at {len(meetings)} meetings; {settled} results")
+
+
+def place_text(runner: dict) -> str:
+    """'1st', '2nd' ... for the Runners tab's Result column ('1st dh' for a dead heat), '' when not placed."""
+    place = runner.get("place")
+    if not place:
+        return ""
+    suffix = "th" if 10 <= place % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(place % 10, "th")
+    return f"{place}{suffix}" + (" dh" if runner.get("dead_heat") else "")
 
 
 def known_meeting(name: str, data: dict) -> str:
@@ -2039,6 +2100,9 @@ def run():
         import betty_companion
         betty_companion.main()
         return
+    if "--fetch-logs" in sys.argv:  # the shop's other tills' logs from the relay, for a till without Python
+        _attach_std_streams()
+        sys.exit(relay_logs.main(sys.argv[sys.argv.index("--fetch-logs") + 1:]))
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # the real screen size, and sharp text
     except Exception:
