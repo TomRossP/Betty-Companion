@@ -1,4 +1,4 @@
-__version__ = "1.2.19"
+__version__ = "1.2.20"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -4705,7 +4705,21 @@ READBACK_NAMES = {'single': 'single', 'double': 'double', 'treble': 'treble', 'a
                   'straight forecast double': 'forecastdouble', 'reversed forecast double': 'fcastdouble'}
 
 
-RULE_ROW_DARK_SHARE = 0.35  # a row this dark across the crop is a ruled line or a box edge, never text (text < 0.2)
+RULE_ROW_DARK_SHARE = 0.35  # a row this dark across the crop may be a ruled line or a box edge (text mostly < 0.3)
+RULE_STANDS_OUT = 0.6       # ... when the rows either side are less than this share of it (rules ~0.5 beside 0.0)
+
+
+def _rule_rows(grey: Any) -> list[int]:
+    """
+    The rows of a grey crop that are a ruled line or a box edge: dark across the crop AND standing out from the rows
+    on either side (a rule is a thin line; text strokes come in a band of rows nearly as dark). On a long line the
+    strokes alone passed the share: 'Phil 5:05 5. Honeysmakemon' lost a row through its letters and read 'Pri 59:05'
+    (9.2462604, 2 Nov). Of the 152 betslip rows on the saved screens, only that row's blanking changed.
+    """
+    share = (grey < 150).mean(axis=1)
+    beside = np.concatenate([[0.0], share, [0.0]])
+    return [i for i, s in enumerate(share)
+            if s > RULE_ROW_DARK_SHARE and beside[i] < RULE_STANDS_OUT * s and beside[i + 2] < RULE_STANDS_OUT * s]
 
 
 def _bw_crop(img: Any, box: tuple, scale: int, drop_rules: bool) -> Any:
@@ -4714,7 +4728,7 @@ def _bw_crop(img: Any, box: tuple, scale: int, drop_rules: bool) -> Any:
     grey = img.convert('L').crop((x, y, x + w, y + h))
     if drop_rules:
         arr = np.array(grey)
-        arr[(arr < 150).mean(axis=1) > RULE_ROW_DARK_SHARE] = 255
+        arr[_rule_rows(arr)] = 255
         grey = Image.fromarray(arr)
     return grey.resize((w * scale, h * scale)).point(lambda v: 0 if v < 150 else 255)
 
@@ -4799,8 +4813,9 @@ BETSLIP_MAX_LINES = int((BETSLIP_BETS_ROWS[0] - BETSLIP_LINE_TOP - BETSLIP_LINE_
 # name '1', price '1-10' (9.2453098, 26 Oct)
 # The dot after the line number can drop out of the read ('4 Keen 8:20 14. Puerto Rico SP', 9.2459454, 31 Oct): a
 # space stands for it, the meeting's letters and the time that must follow keep the line unmistakable
+# 'EP' (early price) can read 'EF': 3 of the 5 lines of 9.2460882 (1 Nov) never read on Choose Bet and Stake
 BETSLIP_SELECTION_LINE = re.compile(
-    r'^\W*(\d+|\?)(?:\s*\.\s*|\s+)([A-Za-z\s]{3,7}?)\s+(\d{1,2}:\d{2})\s*(?:(?:(?:Trap\s*)?(\d+)\.\s*)|(?:Trap\s*(\d+)\s*))?(.*?)\s*[\W_]*(SP|NR|WD|VS|Evens|Evs|\d+\s*[-/]\s*\d+)(?:\s*(?:BP|EP))?[\W_]*$',
+    r'^\W*(\d+|\?)(?:\s*\.\s*|\s+)([A-Za-z\s]{3,7}?)\s+(\d{1,2}:\d{2})\s*(?:(?:(?:Trap\s*)?(\d+)\.\s*)|(?:Trap\s*(\d+)\s*))?(.*?)\s*[\W_]*(SP|NR|WD|VS|Evens|Evs|\d+\s*[-/]\s*\d+)(?:\s*[BE][PF])?[\W_]*$',
     re.IGNORECASE
 )
 GUARANTEED_PURPLE = (128, 0, 128)  # a guaranteed (BOG) price is purple; an ordinary one red (255, 0, 0)
@@ -5335,6 +5350,11 @@ def reuse_panel_open(img: Any) -> bool:
     return bool(_reuse_row_boxes(img))
 
 
+# Rows read 4x enlarged, in one start of Tesseract. At 3x 'Carl' read 'Can' (9.2460886), 'Towc' 'Towe' (9.2461093) and
+# 'Harl' 'Har' (screen 15); at 4x all 62 rows on the saved panels read right, their names the same as at 3x (2 Nov)
+REUSE_READ_SCALE = 4
+
+
 def reuse_panel_rows(img: Any) -> list[dict]:
     """The panel's rows, top first: [{'row', 'label', 'time', 'name', 'y', 'unread', 'on_slip'}] ('name' without a
     cloth / trap number). A row whose meeting and time don't read is kept, marked 'unread': its place still counts.
@@ -5344,7 +5364,7 @@ def reuse_panel_rows(img: Any) -> list[dict]:
     boxes = _reuse_row_boxes(img)
     texts = _ocr_bw_many(img, [box for y0, y1 in boxes for box in (
         (RACE_LIST_LABEL_COL[0] + 3, y0 + 3, RACE_LIST_LABEL_COL[1] - 6, y1 - y0 - 6),
-        (RACE_LIST_NAME_COL[0] + 2, y0 + 3, RACE_LIST_NAME_COL[1] - 6, y1 - y0 - 6))], '--psm 7', 3)  # one start
+        (RACE_LIST_NAME_COL[0] + 2, y0 + 3, RACE_LIST_NAME_COL[1] - 6, y1 - y0 - 6))], '--psm 7', REUSE_READ_SCALE)
     for k, (y0, y1) in enumerate(boxes):
         label, name = texts[2 * k], texts[2 * k + 1]
         m_time = re.search(r'(\d{1,2})[:.](\d{2})', label)

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.20] - 2026-11-02
+
+Four screen misreadings found reviewing the saved screens not yet in the golden readings (todolist.md, 2 Nov).
+
+### Fixed
+- **Betslip lines with an early price dropped** (9.2460882, 1 Nov): on Choose Bet and Stake, 3 of 5 lines never read, because their `EP` read `EF` and the line pattern took only `EP` / `BP`. It now takes `EF` / `BF` too. All 5 lines read.
+- **A long betslip line misread** (9.2462604, 2 Nov): `Phil 5:05 5. Honeysmakemon SP` read `Pri 59:05 &. Honeysi`. Its letters' strokes filled a row of the crop just past the share taken for a ruled line (0.36 > 0.35), so a row through the text was blanked. A ruled line or box edge must now also stand out from the rows on either side (`_rule_rows`); of the 152 betslip rows on the saved screens, only this one's blanking changed, and every real rule and focus-box edge is still blanked.
+- **Previous-selections panel meetings misread**: `Carl` read `Can` (9.2460886, 2 letters off, so not matched to Carlisle), `Towc` read `Towe` (9.2461093) and `Harl` read `Har` (screen 15). The rows are now read 4x enlarged instead of 3x: all 62 rows on the saved panels read right, with their names the same as before.
+- Screens 58-61 (`scratch/betty_screens`) for these, checked in `test_betslip_full_panel.py` and `test_reuse_panel.py`.
+
 ## [1.2.19] - 2026-11-02
 
 ### Fixed
