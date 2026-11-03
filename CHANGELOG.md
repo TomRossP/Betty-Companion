@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.22] - 2026-11-03
+
+### Removed
+- **The relay's second free Gemini key** (user, 3 Nov: released, not needed). The free step reads with
+  `GEMINI_KEY_FREE_1` only (`RELAY_FREE_SLOTS`); on 2 Nov the second key answered "API key not valid" on both slips
+  that reached it. **Relay 1.4.1** (`relay\worker.js`) has no `GEMINI_KEY_FREE_2` slot, so `/ping` and the Gemini
+  light list paid and free1 only. Updating the relay is optional: 1.2.22 never asks it for the second key.
+  `relay\RELAY_SETUP.md` says how, and to delete the `GEMINI_KEY_FREE_2` secret.
+
+### Fixed
+- **The staff screenshot showed Home, not the screen that went wrong** (9.2462614, 2462617, 2462626, 2462632,
+  2462636 and 2462637, cashier till, 2 Nov, "time box ('/'): expected RACE_ENTRY_READY"). On a wager's second
+  navigation problem the watcher backed out to Home (Esc, Esc) before `leave_wager_for_staff` took the picture. The
+  screen is now kept the moment the problem is caught (`screen_now`), before anything is backed out, and saved as
+  `staff_<wager>_<time>.png`; the first try's screen is saved beside it as `..._first.png` (not listed as a wager of
+  its own on the Staff entries tab). New check: `nav_cases.py` section 13.
+
 ## [1.2.21] - 2026-11-03
 
 Values fixed in the code that another shop or till would need different, now settings (user, 3 Nov), and two things

@@ -23,7 +23,6 @@ You need:
   |---|---|
   | `GEMINI_API_KEY` (paid) | `GEMINI_KEY_PAID` |
   | `GEMINI_API_KEY_2` (free project) | `GEMINI_KEY_FREE_1` |
-  | `GEMINI_API_KEY_3` (free project) | `GEMINI_KEY_FREE_2` |
 
   If you can, create **new** keys for the relay in Google AI Studio instead of reusing these.
   Then, once the relay works, you can delete the old ones, along with the copies on this PC.
@@ -73,8 +72,7 @@ You don't need to create any tables. The relay creates them itself the first tim
    |---|---|
    | `ADMIN_PASSWORD` | A new password for the relay's admin page. Let your password manager make it, at least 20 characters. |
    | `GEMINI_KEY_PAID` | The paid Gemini key |
-   | `GEMINI_KEY_FREE_1` | The first free Gemini key |
-   | `GEMINI_KEY_FREE_2` | The second free Gemini key |
+   | `GEMINI_KEY_FREE_1` | The free Gemini key |
 
 3. Add these two with **Type: Text**. They aren't secret.
 
@@ -115,6 +113,14 @@ The relay caps how many reads each till makes. These provider caps cap the money
 Done: Betty Companion 1.0.0 has `https://betty-relay.splaterson92.workers.dev` built in. It isn't secret: without a
 till pass it does nothing. To use another relay, put `RELAY_URL=https://...` in `.env` next to `BettyCompanion.exe`, or
 change the address in the pairing box before pairing.
+
+---
+
+## Updating the relay's code to 1.4.1 (one free key)
+
+Relay **1.4.1** uses one free Gemini key, `GEMINI_KEY_FREE_1`; the second free key was released (3 Nov). Paste the
+new `relay\worker.js` over the code and **Deploy** as in Step 3, then delete the secret `GEMINI_KEY_FREE_2` under
+**Settings, Variables and Secrets**. Until you do, nothing breaks: Betty Companion 1.2.22 no longer asks for it.
 
 ---
 
@@ -176,7 +182,7 @@ Once per till, in the Betty Companion window:
    match, then tap **Approve**.
 4. Within a few seconds the window says **Paired**. The till's pass is saved in that PC's Windows Credential Manager,
    as "BettyCompanion relay". Nobody types or sees it.
-5. The Gemini light at the bottom turns green: *online via relay (paid, free1, free2; 0 of 1000 reads today)*.
+5. The Gemini light at the bottom turns green: *online via relay (paid, free1; 0 of 1000 reads today)*.
 
 From then on that till reads slips through the relay, even if its `.env` still has Gemini keys. **Unpair** (same box)
 removes the pass from that PC. Also **Revoke** it on `/admin` if it won't be paired again.

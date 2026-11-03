@@ -10,11 +10,11 @@
 // they grow (/logs/put), so the tills of a shop, and Claude on either of them, can read both tills' logs (/logs/list,
 // /logs/get). The same rule as lessons: a till sees its shop's tills' logs, or only its own when it is in no shop.
 
-const RELAY_VERSION = "1.4.0";
+const RELAY_VERSION = "1.4.1";
 const PAIRING_MINUTES = 10;        // a code not approved within this time expires
 const MAX_PENDING_PAIRINGS = 20;   // stops strangers filling the approval list
 const ADMIN_FAILS_PER_HOUR = 10;   // wrong admin passwords from one address before it is locked out for an hour
-const GEMINI_SLOTS = { paid: "GEMINI_KEY_PAID", free1: "GEMINI_KEY_FREE_1", free2: "GEMINI_KEY_FREE_2" };
+const GEMINI_SLOTS = { paid: "GEMINI_KEY_PAID", free1: "GEMINI_KEY_FREE_1" };  // 1.4.1: no second free key (3 Nov)
 const LESSONS_PER_SYNC = 500;      // most lessons one sync hands back (the till asks again for the rest)
 const LESSON_IMAGE_MAX = 1500000;  // a whole-slip lesson's picture, base64 characters
 const LESSON_KINDS = ["runner", "meeting", "wording", "slip"];

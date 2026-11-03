@@ -1,4 +1,4 @@
-__version__ = "1.2.21"
+__version__ = "1.2.22"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -2361,7 +2361,7 @@ def gemini_tier_request(payload: dict, keys: list[str], models: list[str], timeo
     return None
 
 
-RELAY_FREE_SLOTS = ["relay:free1", "relay:free2"]  # the relay's free Gemini projects (GEMINI_KEY_FREE_1/2 on it)
+RELAY_FREE_SLOTS = ["relay:free1"]  # the relay's free Gemini project (GEMINI_KEY_FREE_1); the second went 3 Nov
 
 
 def reader_route() -> str:
@@ -7255,6 +7255,7 @@ def _lessons_outcome(placed: bool):
 _wagers_left_for_staff: set[str] = set()  # this session: wagers placed, or stopped by Esc or a failure; not opened again (a pause is retried)
 _current_wager: str | None = None
 _nav_failures: dict[str, int] = {}  # wager -> navigation problems this session (left for staff after 2)
+_first_nav_failure: tuple[str, Any] | None = None  # (wager, screen) of the latest first navigation problem, kept for its staff screenshot
 _open_elsewhere_until: dict[str, float] = {}  # wager -> time to look at it again (another till had it open)
 
 
@@ -7509,16 +7510,31 @@ def save_slip_image(img_str: str | None, number: str | None) -> str | None:
         return None
 
 
-def save_staff_screenshot(number: str) -> str | None:
+def screen_now() -> Any:
+    """Betty's screen now, or None when it can't be taken: for keeping the screen a fault happened on before backing
+    out of it."""
+    try:
+        return pyautogui.screenshot()
+    except Exception as e:
+        print(f"[-] Could not take the screen: {e}")
+        return None
+
+
+def save_staff_screenshot(number: str, screen: Any = None, earlier: Any = None) -> str | None:
     """Betty's screen at the moment a wager goes to staff, before anything is backed out: logs/staff_<wager>_<time>.png,
-    so a failure can be seen afterwards rather than guessed. Only the newest STAFF_SCREENSHOTS_KEPT are kept.
-    Returns the file saved (None when it couldn't be)."""
+    so a failure can be seen afterwards rather than guessed. `screen`: the one taken when it went wrong, when Betty
+    has been backed out of since (else the screen now); `earlier`: the one from a failed first try, saved beside it as
+    ..._first.png. Only the newest STAFF_SCREENSHOTS_KEPT are kept. Returns the file saved (None when it couldn't be)."""
     try:
         log_dir = app_paths.log_dir()  # next to the exe when packaged
         os.makedirs(log_dir, exist_ok=True)
-        path = os.path.join(log_dir, f"staff_{number}_{time.strftime('%Y%m%d_%H%M%S')}.png")
-        pyautogui.screenshot().save(path)
+        stem = os.path.join(log_dir, f"staff_{number}_{time.strftime('%Y%m%d_%H%M%S')}")
+        path = stem + ".png"
+        (screen if screen is not None else pyautogui.screenshot()).save(path)
         print(f"[*] Screen saved for staff: {path}")
+        if earlier is not None:
+            earlier.save(stem + "_first.png")
+            print(f"[*] The first try's screen saved beside it: {stem}_first.png")
     except Exception as e:
         print(f"[-] Could not save the staff screenshot: {e}")
         return None
@@ -7595,10 +7611,12 @@ def _corpus_writer():
             pass
 
 
-def leave_wager_for_staff(number: str, reason: str):
+def leave_wager_for_staff(number: str, reason: str, screen: Any = None, earlier: Any = None):
     """
     A wager the program can't do. Test mode: back out and leave it unedited (staff are watching). Otherwise:
     Mark bet fao Manager, which moves it out of the unedited list. Either way: one sentence on the HUD, with a sound.
+    `screen` / `earlier`: the screens it went wrong on, when Betty has been backed out of since (see
+    save_staff_screenshot).
     """
     _wagers_left_for_staff.add(number)
     print(f"[!] Wager {number} needs staff: {reason}")
@@ -7606,7 +7624,7 @@ def leave_wager_for_staff(number: str, reason: str):
         print(f"[*] Other programs' windows with the keyboard in the last {ForegroundLog.SECS} s: "
               f"{FOREGROUND_LOG.others()}")
     corpus_outcome(number, "staff", reason)
-    shot = save_staff_screenshot(number)
+    shot = save_staff_screenshot(number, screen, earlier)
     _lessons_outcome(placed=False)
     # The slip as read, for 'Teach from this slip' on the Staff entries tab (only when it was this wager's)
     reading = _last_reading if _last_reading and _last_reading.get('wager') == number else None
@@ -7702,7 +7720,7 @@ def _go_home_from_handler() -> bool:
 
 def watcher_loop():
     """While the watcher is on: work through unedited wagers (see watcher_cycle), recovering to Home on any trouble."""
-    global watcher_busy, _watcher_stop_reason, _watcher_screen, _current_wager
+    global watcher_busy, _watcher_stop_reason, _watcher_screen, _current_wager, _first_nav_failure
     failures = 0
     while True:
         resume_after_staff_idle()
@@ -7763,9 +7781,13 @@ def watcher_loop():
             watcher_on.clear()
             notify(f"Watcher stopped: {e}. Please check Betty.", is_error=True)
         except NavError as e:
+            # The screen it went wrong on, before backing out: the staff screenshot was taken after the Esc presses,
+            # so it showed Home (9.2462614 and five more, cashier till, 2 Nov)
+            fault_screen = screen_now() if _current_wager else None
             if _current_wager:  # a navigation glitch is not the wager's fault: one more go before leaving it
                 _nav_failures[_current_wager] = _nav_failures.get(_current_wager, 0) + 1
                 if _nav_failures[_current_wager] < 2:
+                    _first_nav_failure = (_current_wager, fault_screen)
                     _current_wager = None
             failures += 1
             print(f"[-] Watcher{f' (wager {_current_wager})' if _current_wager else ''}: {e}")
@@ -7776,8 +7798,11 @@ def watcher_loop():
                 notify(f"Watcher stopped: {e}. Please check Betty.", is_error=True)
             elif _current_wager:  # its second navigation failure: FAO in live mode, with a sound (review R8)
                 number, _current_wager = _current_wager, None
+                first = _first_nav_failure[1] if _first_nav_failure and _first_nav_failure[0] == number else None
+                _first_nav_failure = None
                 try:
-                    leave_wager_for_staff(number, f"Betty's screens went wrong twice while entering it ({e})")
+                    leave_wager_for_staff(number, f"Betty's screens went wrong twice while entering it ({e})",
+                                          screen=fault_screen, earlier=first)
                 except WatcherStop:
                     print(f"[*] Wager {number} left for staff (watcher switched off).")
                 except Exception as fao_error:
