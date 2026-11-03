@@ -51,6 +51,27 @@ Both tills of a shop share what they learn once the relay is 1.3.0 and both are 
 /admin page (relay\RELAY_SETUP.md, "Shops").
 
 
+SETTINGS FOR THIS SHOP OR TILL
+------------------------------
+Nothing needs setting: these are only for a shop or till that needs something different. Make a text file called
+.env next to BettyCompanion.exe (if there isn't one) and add a line per setting, for example
+    STAFF_IDLE_RESUME_SECS=120
+then reopen Betty Companion. A setting left out, or not a number, keeps the usual value (in brackets).
+- BETTY_SHARE=\\SERVER\share   where a cashier's till finds Betty's racecards when no drive letter has them
+                               (otherwise it looks on C:\, every drive letter, and this PC's mapped network drives)
+- STAFF_IDLE_RESUME_SECS (60)  after staff use the keyboard or mouse, carry on after this long with no activity
+- WATCHER_POLL_SECS (5)        with no unedited wagers, look again this often
+- OPEN_ELSEWHERE_RETRY_SECS (30)  a wager another till has open is tried again after this long
+- SCAN_TIMEOUT_SECS (90), RECHECK_TIMEOUT_SECS (45)  longest wait for the slip reader (raise on a slow connection)
+- GEMINI_QUOTA_PAUSE_SECS (600)   a reader out of quota is left alone this long
+- LOG_UPLOAD_SECS (120), LESSON_SYNC_SECS (60)  how often logs and lessons go to the relay
+- Kept in the logs folder: STAFF_SCREENSHOTS_KEPT (20), SLIP_IMAGES_KEPT (200), REUSE_SHOTS_KEPT (10),
+  CORPUS_KEPT (1500 pictures, about 90 KB each), STAFF_JOURNAL_DAYS (30)
+House rules and meetings: put this shop's own bookmaker_rules.json or meetings_directory.json next to
+BettyCompanion.exe and it is used instead of the one inside the program (start from a copy of the one in _internal).
+The screen must stay at 1366 x 768: that can't be changed.
+
+
 UPDATING
 --------
 Close Betty Companion, then replace this folder with the new one, keeping the "logs" folder if you want the history,

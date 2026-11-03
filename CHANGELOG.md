@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.21] - 2026-11-03
+
+Values fixed in the code that another shop or till would need different, now settings (user, 3 Nov), and two things
+the cashier till's 1.2.17 logs showed (2 Nov, fetched from the relay).
+
+### Added
+- **Shop settings in `.env`** (`app_paths.setting`), each read as a number, with the old value when unset or not a
+  number: `STAFF_IDLE_RESUME_SECS` (60), `WATCHER_POLL_SECS` (5), `OPEN_ELSEWHERE_RETRY_SECS` (30),
+  `SCAN_TIMEOUT_SECS` (90), `RECHECK_TIMEOUT_SECS` (45), `GEMINI_QUOTA_PAUSE_SECS` (600), `LESSON_SYNC_SECS` (60),
+  `LOG_UPLOAD_SECS` (120), and how much is kept in `logs\`: `STAFF_SCREENSHOTS_KEPT` (20), `SLIP_IMAGES_KEPT` (200),
+  `REUSE_SHOTS_KEPT` (10), `CORPUS_KEPT` (1500), `STAFF_JOURNAL_DAYS` (30). Listed in the staff README.
+- **A shop's own house rules and meetings** (`app_paths.data_file`): a `bookmaker_rules.json` or
+  `meetings_directory.json` next to `BettyCompanion.exe` is used instead of the one shipped in the build, and survives
+  an update (the build keeps everything next to the exe).
+
+### Changed
+- **Betty's drive on a cashier till isn't tied to the first shop** (`betty_feed.betty_drives`): after C:\ and every
+  drive letter, it looks in `BETTY_SHARE`, then in the network folders the PC keeps mapped (one whose letter isn't
+  connected yet after a restart), and only then in `\\PC\drvc`. `BETTY_SHARE` was read when `betty_feed` was
+  imported, before the launcher loads `.env`, so a share set there was never used by the window.
+
+### Fixed
+- **A Gemini key that isn't valid was tried on every slip** (cashier till, 19:40 and 19:42, 2 Nov): the relay's
+  second free key answers "API key not valid", seen on both slips that went to staff when the paid credit ran out.
+  It now says which key to replace ("the relay's GEMINI_KEY_FREE_2 isn't a valid Gemini key: replace it in
+  Cloudflare") and isn't tried again that run.
+- **The program's own selection check counted as another program with the keyboard** (9.2462892, 20:15, 2 Nov):
+  the warning sign on staff reasons now leaves out this program's own windows.
+
+### Not changed
+- **The screen size stays 1366 x 768.** Every place the program reads or clicks on Betty is measured at that size;
+  the manager till was at 1024 x 768 on 2 Nov 20:58 and 21:03, and the program refused to start, as meant.
+
 ## [1.2.20] - 2026-11-02
 
 Four screen misreadings found reviewing the saved screens not yet in the golden readings (todolist.md, 2 Nov).

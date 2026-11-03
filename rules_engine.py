@@ -15,6 +15,7 @@ from typing import Callable
 from difflib import get_close_matches
 
 
+import app_paths
 from meetings_manager import meetings_manager
 
 # Standard UK Glossary Line Counts for full cover bets
@@ -483,7 +484,7 @@ def set_notification_callback(cb: Callable[[str, bool, str | None], None]):
 # -----------------------------------------------------------------------------
 # Bookmaker Rules Manager
 # -----------------------------------------------------------------------------
-RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bookmaker_rules.json")
+RULES_FILE = "bookmaker_rules.json"  # shipped with the program; a shop's own copy next to the exe wins (app_paths.data_file)
 # What the engine reads from the active profile. The values live only in bookmaker_rules.json.
 REQUIRED_PARAMETERS = ("max_greyhound_traps",)
 REQUIRED_STATES = (
@@ -506,8 +507,8 @@ class BookmakerRulesManager:
     re-read when edited; an edit that breaks it keeps the rules already loaded (and says so) instead of stopping mid-day.
     """
 
-    def __init__(self, config_path: str = RULES_FILE):
-        self.config_path = config_path
+    def __init__(self, config_path: str | None = None):
+        self.config_path = config_path or app_paths.data_file(RULES_FILE)
         self.rules: dict = {}
         self._last_mtime = 0.0
         self.load()

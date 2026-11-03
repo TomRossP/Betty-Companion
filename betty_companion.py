@@ -1,4 +1,4 @@
-__version__ = "1.2.20"
+__version__ = "1.2.21"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -350,8 +350,8 @@ GEMINI_FREE_MODELS = _env_list("GEMINI_FREE_MODELS", "gemini-3.8-flash")
 SLIP_READER = os.environ.get("SLIP_READER", "waterfall").strip().lower()  # waterfall | gemini (see reader_tiers)
 # SLIP_READER=gemini only (evaluation runs): every Gemini key, these models in order
 VLM_WATERFALL_MODELS = _env_list("GEMINI_MODELS", "gemini-4-argon,gemini-pro-latest,gemini-3.8-flash,gemini-3.5-flash")
-SCAN_TIMEOUT_SECS = 90     # timed-out requests are still billed: keep these generous
-RECHECK_TIMEOUT_SECS = 45
+SCAN_TIMEOUT_SECS = app_paths.setting("SCAN_TIMEOUT_SECS", 90)     # timed-out requests are still billed: keep these generous
+RECHECK_TIMEOUT_SECS = app_paths.setting("RECHECK_TIMEOUT_SECS", 45)
 
 
 # --- FLICKER-RESILIENT MULTI-SAMPLING UTILITIES ---
@@ -2229,7 +2229,8 @@ def gemini_call(payload: dict, key: str, model: str, timeout: float, label: str)
     One Gemini request, straight to Google with a key from .env, or through the relay when `key` is a relay slot
     ('relay:paid'). Returns (status, parsed JSON): status is 'ok', 'no_credit' (402), 'quota' (429, or the till's
     daily limit on the relay), 'refused' (the relay won't take this till's pass, or has no key in that slot), 'busy'
-    (5xx, timeout, connection), 'unavailable' (other HTTP errors), 'blocked', 'bad_json' or 'aborted'.
+    (5xx, timeout, connection), 'bad_key' (Google: not a valid key), 'unavailable' (other HTTP errors), 'blocked',
+    'bad_json' or 'aborted'.
     """
     if key.startswith(relay_link.RELAY_KEY_PREFIX):  # through the relay: this till's pass, the relay's key
         route = relay_link.relay_route()
@@ -2280,6 +2281,8 @@ def gemini_call(payload: dict, key: str, model: str, timeout: float, label: str)
             return 'refused', None
         if relay and code == 403 and 'daily limit' in msg:
             return 'quota', None
+        if code in (400, 403) and re.search(r'api key not valid|api_key_invalid', msg, re.I):
+            return 'bad_key', None
         if code == 402:
             return 'no_credit', None
         if code == 429:
@@ -2305,16 +2308,28 @@ def gemini_call(payload: dict, key: str, model: str, timeout: float, label: str)
 
 
 _gemini_quota_until: dict[tuple[str, str], float] = {}  # (key, model) -> time its 429 quota block is assumed over
-GEMINI_QUOTA_PAUSE_SECS = 600
+GEMINI_QUOTA_PAUSE_SECS = app_paths.setting("GEMINI_QUOTA_PAUSE_SECS", 600)
+_gemini_bad_keys: set[str] = set()  # keys Google called not valid: skipped for the rest of the run
+
+
+def bad_key_advice(key: str, key_no: int) -> str:
+    """What to replace when Google says a key isn't valid: the relay's secret for a relay slot, else the key in .env."""
+    if key.startswith(relay_link.RELAY_KEY_PREFIX):
+        slot = key[len(relay_link.RELAY_KEY_PREFIX):]
+        secret = {'paid': 'GEMINI_KEY_PAID'}.get(slot) or f"GEMINI_KEY_FREE_{slot.removeprefix('free')}"
+        return f"the relay's {secret} isn't a valid Gemini key: replace it in Cloudflare (relay\\RELAY_SETUP.md)"
+    return f"Gemini key {key_no} of this step in .env isn't valid: replace it"
 
 
 def gemini_tier_request(payload: dict, keys: list[str], models: list[str], timeout: float, label: str) -> dict | None:
     """
-    Try each key, each model in order. No credit (402) or refused by the relay -> next key; quota (429), blocked,
-    bad JSON or unavailable -> next model; busy / timeout -> one retry of the same model, then the next. None when
-    nothing answered.
+    Try each key, each model in order. No credit (402), not a valid key or refused by the relay -> next key; quota
+    (429), blocked, bad JSON or unavailable -> next model; busy / timeout -> one retry of the same model, then the
+    next. None when nothing answered.
     """
     for key_no, key in enumerate(keys, 1):
+        if key in _gemini_bad_keys:
+            continue
         for model in models:
             if _gemini_quota_until.get((key, model), 0) > time.time():
                 continue
@@ -2338,6 +2353,10 @@ def gemini_tier_request(payload: dict, keys: list[str], models: list[str], timeo
                 print(f"[!] {label}: Gemini key {key_no} of this step has no credit (HTTP 402).")
                 break
             if status == 'refused':
+                break
+            if status == 'bad_key':  # the free key on the relay, 2 Nov: tried on every slip, never valid
+                _gemini_bad_keys.add(key)
+                print(f"[!] {label}: {bad_key_advice(key, key_no)}. Not tried again this run.")
                 break
     return None
 
@@ -4024,7 +4043,7 @@ _watcher_state_lock = threading.Lock()
 _wager_opened = False  # the current wager's bet edit was opened (End): only then does Esc or a failure leave it for staff
 _paused_for_staff = False  # the watcher went idle because staff used the till (not switched off with `)
 _last_staff_activity = 0.0  # last key, click or mouse movement by a person
-STAFF_IDLE_RESUME_SECS = 60  # paused for staff: switch back on after this long with no activity at all
+STAFF_IDLE_RESUME_SECS = app_paths.setting("STAFF_IDLE_RESUME_SECS", 60)  # paused for staff: switch back on after this long with no activity at all
 _staff_input_lock = threading.Lock()
 
 
@@ -5318,7 +5337,7 @@ REUSE_PANEL_COLS = (5, 137, 311, 399)  # its red column borders, top to bottom o
 REUSE_ROW_PITCH = 35          # a row and its border: the rows' top and bottom lines are 36 / 71 / 106 px apart
 REUSE_ROWS_MAX = 9            # rows above the folder buttons
 SLIP_IMAGE_SPOT = (SLIP_REGION[0] + SLIP_REGION[2] // 2, SLIP_REGION[1] + SLIP_REGION[3] // 2)  # right-clicked
-REUSE_SHOTS_KEPT = 10         # pictures of the panel kept in logs/ when it couldn't be used
+REUSE_SHOTS_KEPT = app_paths.setting("REUSE_SHOTS_KEPT", 10)         # pictures of the panel kept in logs/ when it couldn't be used
 
 
 def _reuse_row_boxes(img: Any) -> list[tuple[int, int]]:
@@ -6903,7 +6922,7 @@ class ForegroundLog:
             try:
                 title = ctypes.create_unicode_buffer(120)
                 user32.GetWindowTextW(hwnd, title, 120)
-                self._events.append((time.time(), window_exe(hwnd), title.value))
+                self._events.append((time.time(), window_exe(hwnd), title.value, window_pid(hwnd)))
             except Exception:
                 pass
 
@@ -6917,10 +6936,14 @@ class ForegroundLog:
             user32.DispatchMessageW(ctypes.byref(msg))
 
     def others(self) -> str:
-        """Other programs' windows that had the keyboard in the last SECS seconds, oldest first; 'none'."""
-        now = time.time()
-        seen = [f"{exe or '?'} '{title or 'untitled'}' {now - t:.1f} s ago" for t, exe, title in list(self._events)
-                if now - t <= self.SECS and exe != BETTY_EXE]
+        """
+        Other programs' windows that had the keyboard in the last SECS seconds, oldest first; 'none'. This program's
+        own windows (the selection check staff type into) are left out: they take the keyboard on purpose, and
+        counted as another program on 9.2462892 (2 Nov), which staff cancelled at the selection check.
+        """
+        now, own = time.time(), os.getpid()
+        seen = [f"{exe or '?'} '{title or 'untitled'}' {now - t:.1f} s ago" for t, exe, title, pid in list(self._events)
+                if now - t <= self.SECS and exe != BETTY_EXE and pid != own]
         return "; ".join(seen) or "none"
 
 
@@ -7178,7 +7201,7 @@ def wait_for_staff_review(number: str) -> str:
 
 
 # --- 6d. THE WATCHER LOOP ---
-WATCHER_POLL_SECS = 5.0       # queue empty: look again this often, sitting on View Wagers
+WATCHER_POLL_SECS = app_paths.setting("WATCHER_POLL_SECS", 5.0)       # queue empty: look again this often, sitting on View Wagers
 WATCHER_UNKNOWN_LIMIT = 3     # back-out attempts that fail in a row before the watcher stops and alerts staff
 _wager_lessons: set[str] = set()  # lessons used on the current wager: counted placed / to staff when it ends
 _last_reading: dict | None = None  # the current wager's slip as read: its lines and picture (Teach from this slip)
@@ -7193,7 +7216,7 @@ def _lesson_used(lesson: dict):
         print(f"[-] Could not count lesson {lesson['id']}: {e}")
 
 
-LESSON_SYNC_SECS = 60  # how often lessons are shared with the shop's other tills through the relay
+LESSON_SYNC_SECS = app_paths.setting("LESSON_SYNC_SECS", 60)  # how often lessons are shared with the shop's other tills through the relay
 _lesson_sync_now = threading.Event()  # set when something is taught: shared at once, not at the next round
 
 
@@ -7267,7 +7290,7 @@ class WagerOpenElsewhere(Exception):
     """Another till is viewing this wager's image ("TERMINAL x IS VIEWING THIS WAGER'S IMAGE"): skip it for now."""
 
 
-OPEN_ELSEWHERE_RETRY_SECS = 30
+OPEN_ELSEWHERE_RETRY_SECS = app_paths.setting("OPEN_ELSEWHERE_RETRY_SECS", 30)
 VW_SLIP_MESSAGE_BOX = (900, 320, 460, 150)  # View Wagers slip panel: where "TERMINAL x IS VIEWING..." shows, in green
 VW_MESSAGE_GREEN = (0, 255, 65)
 
@@ -7427,10 +7450,10 @@ def remove_oldest(paths: list[str], keep: int):
                       f"Skipped; the rest are tidied.")
 
 
-STAFF_SCREENSHOTS_KEPT = 20  # newest kept in logs/ (no image folder of their own)
+STAFF_SCREENSHOTS_KEPT = app_paths.setting("STAFF_SCREENSHOTS_KEPT", 20)  # newest kept in logs/ (no image folder of their own)
 STAFF_JOURNAL = "staff_journal.jsonl"  # logs/: every wager left for staff and every selection staff typed
-STAFF_JOURNAL_DAYS = 30
-SLIP_IMAGES_KEPT = 200  # logs/slip_*.png: the slip as read, for each selection staff had to type (training)
+STAFF_JOURNAL_DAYS = app_paths.setting("STAFF_JOURNAL_DAYS", 30)
+SLIP_IMAGES_KEPT = app_paths.setting("SLIP_IMAGES_KEPT", 200)  # logs/slip_*.png: the slip as read, for each selection staff had to type (training)
 
 
 def journal_staff(kind: str, **data):
@@ -7509,7 +7532,7 @@ def save_staff_screenshot(number: str) -> str | None:
 # now decide differently, judged by how the wager ended (placed = the decision was right). The offline tests stood in
 # for Betty and only had the screens already seen: they passed while the tills failed (user, 1 Nov). Looks only;
 # written by a thread of its own, so nothing on the till waits for it. BETTY_CORPUS=0 turns it off.
-CORPUS_KEPT = 1500             # pictures kept (~90 KB each)
+CORPUS_KEPT = app_paths.setting("CORPUS_KEPT", 1500)             # pictures kept (~90 KB each)
 _corpus_queue: queue.Queue = queue.Queue(maxsize=30)  # a full screen each: ~3 MB in memory until written
 _corpus_writer_started = False
 _corpus_lock = threading.Lock()

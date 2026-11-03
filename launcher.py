@@ -44,7 +44,7 @@ REQUIRED_SCREEN = (1366, 768)
 GEMINI_CHECK_SECS = 300   # the free Gemini check, every 5 minutes (and on a click)
 DATA_REFRESH_SECS = 60    # racecards, meetings and runners
 LESSON_SYNC_SECS = 60     # what staff taught, shared with the shop's other tills (lessons.sync)
-LOG_UPLOAD_SECS = 120     # this till's new log lines and staff screens, to the relay (relay_logs.upload)
+LOG_UPLOAD_SECS = 120     # this till's new log lines and staff screens, to the relay (relay_logs.upload); .env can change it
 HEALTH_SECS = 5           # the ready light
 LOG_TAIL_SECS = 1.5
 STOP_WAIT_SECS = 15       # Stop: the program gets this long to finish before it is ended
@@ -872,7 +872,7 @@ class App:
             threading.Thread(target=lambda: self.inbox.put({"event": "_logs", "state": relay_logs.upload()}),
                              daemon=True).start()
         if again and not self.closing:
-            self.root.after(LOG_UPLOAD_SECS * 1000, self.upload_logs)
+            self.root.after(int(app_paths.setting("LOG_UPLOAD_SECS", LOG_UPLOAD_SECS) * 1000), self.upload_logs)
 
     def show_logs_state(self, state: dict):
         if not app_paths.is_frozen():

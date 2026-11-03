@@ -58,9 +58,8 @@ _MONTH_CODES = "123456789abc"
 
 
 # Betty's files are on the manager till's C:\ (Betty 0). The cashier tills have no Events or DBF of their own: their
-# Betty reads them from the manager till's C:\, shared as drvc and mapped as a network drive (F: at South Oxhey).
-BETTY_SHARE = os.environ.get("BETTY_SHARE", r"\\PC\drvc")
-BETTY_DRIVES = ["C:\\"] + [f"{d}:\\" for d in "DEFGHIJKLMNOPQRSTUVWXYZ"] + [BETTY_SHARE]
+# Betty reads them from the manager till's C:\, shared and mapped as a network drive (\\PC\drvc as F: at South Oxhey).
+LEGACY_SHARE = r"\\PC\drvc"  # the first shop's share, tried last so a till set up before BETTY_SHARE still finds it
 ROOT_RETRY_SECS = 30  # while no drive has Betty's folders, look again at most this often
 _root = {"found": "", "tried_at": 0.0}
 
@@ -69,10 +68,20 @@ def _has_betty(root: str) -> bool:
     return all(os.path.isdir(os.path.join(root, sub)) for sub in ("Events", "DBF"))
 
 
+def betty_drives() -> list[str]:
+    """
+    Where Betty's folders are looked for, in order: C:\\, every drive letter, BETTY_SHARE from .env, the network
+    folders this PC keeps mapped (one whose letter isn't connected yet), then LEGACY_SHARE. Worked out when asked:
+    the launcher loads .env after this module is imported.
+    """
+    shares = [os.environ.get("BETTY_SHARE", "").strip()] + app_paths.network_shares() + [LEGACY_SHARE]
+    return ["C:\\"] + [f"{d}:\\" for d in "DEFGHIJKLMNOPQRSTUVWXYZ"] + list(dict.fromkeys(s for s in shares if s))
+
+
 def find_betty_root() -> str:
-    """The first of BETTY_DRIVES holding both Events and DBF: C:\\ on the manager till, the mapped share (F:) on a
-    cashier till, else the share itself (\\\\PC\\drvc, BETTY_SHARE) when no letter is mapped. '' when none has."""
-    return next((d for d in BETTY_DRIVES if _has_betty(d)), "")
+    """The first of betty_drives() holding both Events and DBF: C:\\ on the manager till, the mapped share (F:) on a
+    cashier till, else the share itself when no letter is mapped. '' when none has."""
+    return next((d for d in betty_drives() if _has_betty(d)), "")
 
 
 def saved_betty_root() -> str:

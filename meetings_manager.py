@@ -12,6 +12,8 @@ import re
 from difflib import get_close_matches
 from typing import Any
 
+import app_paths
+
 
 # Core Irish & UK racecourses guaranteed fallback to prevent accidental greyhound misclassification
 DEFAULT_DOMESTIC_HORSE_COURSES = {
@@ -207,9 +209,8 @@ class MeetingsDirectoryManager:
     """
 
     def __init__(self, config_path: str | None = None):
-        if config_path is None:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            config_path = os.path.join(script_dir, "meetings_directory.json")
+        if config_path is None:  # shipped with the program; a shop's own copy next to the exe wins
+            config_path = app_paths.data_file("meetings_directory.json")
         self.config_path = config_path
         self._last_mtime: float = 0.0
         self.data: dict[str, Any] = {}

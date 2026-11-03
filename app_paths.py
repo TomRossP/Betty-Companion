@@ -40,6 +40,57 @@ def betty_paths_file() -> str:
     return os.path.join(app_dir(), "betty_paths.json")
 
 
+def data_file(name: str) -> str:
+    """
+    A file shipped with the program that a shop may replace with its own (bookmaker_rules.json,
+    meetings_directory.json): this till's copy next to the exe wins, else the one shipped in the build. The build
+    keeps whatever sits next to the exe, so a shop's own copy survives an update. The shipped one is beside this
+    module (the build's _internal), so a test that pretends to be the exe still gets the real file.
+    """
+    for path in (os.path.join(app_dir(), name), os.path.join(os.path.dirname(os.path.abspath(__file__)), name)):
+        if os.path.isfile(path):
+            return path
+    return os.path.join(bundle_dir(), name)
+
+
+_bad_settings: set[str] = set()
+
+
+def setting(name: str, default):
+    """
+    A shop setting from .env (or the environment), as the type of `default`; `default` when it's unset or doesn't
+    read as one (said once in the log). Read when asked, so .env must be loaded first.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return type(default)(float(raw)) if isinstance(default, int) and not isinstance(default, bool) \
+            else type(default)(raw)
+    except ValueError:
+        if name not in _bad_settings:
+            _bad_settings.add(name)
+            print(f"[-] .env: {name}={raw!r} isn't a number; using {default}.")
+        return default
+
+
+def network_shares() -> list[str]:
+    """
+    The network folders this PC keeps mapped to a drive letter (Windows' remembered connections, HKCU\\Network), as
+    \\\\server\\share: one can still be read when its letter isn't connected yet after a restart. [] when none.
+    """
+    try:
+        import winreg
+        shares = []
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Network") as net:
+            for i in range(winreg.QueryInfoKey(net)[0]):
+                with winreg.OpenKey(net, winreg.EnumKey(net, i)) as drive:
+                    shares.append(winreg.QueryValueEx(drive, "RemotePath")[0])
+        return [s.rstrip("\\") + "\\" for s in shares if s.startswith("\\\\")]
+    except (OSError, ImportError):
+        return []
+
+
 def find_tesseract() -> str | None:
     """
     The Tesseract to run: TESSERACT_CMD from .env, else the copy shipped with the program (tesseract/ next to the exe
