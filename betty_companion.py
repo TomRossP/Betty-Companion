@@ -1,4 +1,4 @@
-__version__ = "1.2.23"
+__version__ = "1.2.24"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -4727,6 +4727,11 @@ ENTRY_BET_TYPES = {
     # refused at entry, so the whole wager went to staff (9.2460746, 1 Nov). Betty's rows (screen 26 p3-p4), found by
     # name: no shortcut
     'straight forecast double': (None, 'forecastdoubles'), 'reversed forecast double': (None, 'revfcastdoubles'),
+    # Every k-fold of the selections, found by name. The same-race rule turns a clashed accumulator over 4+ races into
+    # these over all its selections at the stake divided (rules_engine CASE B), as Betty strikes only the lines whose
+    # selections are all in different races: it charged 2 doubles, not 3, for Doubles over two runners in one race and
+    # a third (9.2460884, 1 Nov). Refused at entry until 1.2.24, so the wager went to staff (9.2463985, 3 Nov)
+    **{f'perm {k}-folds': (None, f'perm{k}folds') for k in range(4, 11)},
 }
 # How Betty names each type on the betslip read-back ("1) Treble. ..."): letters that must appear
 READBACK_NAMES = {'single': 'single', 'double': 'double', 'treble': 'treble', 'accumulator': 'fold', 'yankee': 'yankee',
@@ -4734,7 +4739,8 @@ READBACK_NAMES = {'single': 'single', 'double': 'double', 'treble': 'treble', 'a
                   'trixie': 'trixie', 'canadian': 'canadian', 'heinz': 'heinz', 'super heinz': 'superheinz',
                   'goliath': 'goliath', 'straight forecast': 'forecast', 'reversed forecast': 'forecast',
                   'combination forecast': 'forecast', 'tricast': 'tricast', 'combination tricast': 'tricast',
-                  'straight forecast double': 'forecastdouble', 'reversed forecast double': 'fcastdouble'}
+                  'straight forecast double': 'forecastdouble', 'reversed forecast double': 'fcastdouble',
+                  **{f'perm {k}-folds': 'fold' for k in range(4, 11)}}
 
 
 RULE_ROW_DARK_SHARE = 0.35  # a row this dark across the crop may be a ruled line or a box edge (text mostly < 0.3)

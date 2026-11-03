@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.24] - 2026-11-03
+
+### Added
+- **Perm 4-Folds to Perm 10-Folds are entered** (9.2463985, 3 Nov). A slip's "50 EW ACCUMULATOR LAST 5" had Vivre Le Reve and Away For The Night both in the Lingfield 14:47. The house rule divides the stake where same-race selections clash, so the same-race rule already made it Perm 4-Folds over all 5 selections at 25p each way (2 valid 4-folds, 100p, the slip's £5.10 matched). But entry had never been given the Perm types, so the wager went to staff ("bet type(s) the program can't enter yet: perm 4-folds"). They're now picked from Betty's bet list by name (no shortcut; the last page on screen 25).
+- Betty strikes only the lines whose selections are all in different races: for Doubles over two runners in one race and a third it charged 2 doubles, not 3 (9.2460884, 1 Nov: £7.50 = Payment). Not yet seen for Perm N-Folds itself. If Betty struck every line, its total would be more than the Payment and its own check at F12 would stop it for staff.
+- `test_bet_list_choice.py`: the real bet-list read finds Perm 4-Folds on screen 25, the row is clicked once and chosen alone, and Perm 4-10 Folds are enterable (over exactly k selections still Acc On All Selns).
+
 ## [1.2.23] - 2026-11-03
 
 About 4 s less per wager (user, 3 Nov: "slow selecting bets" on View Wagers). Measured on the cashier till's 52
