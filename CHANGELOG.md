@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.23] - 2026-11-03
+
+About 4 s less per wager (user, 3 Nov: "slow selecting bets" on View Wagers). Measured on the cashier till's 52
+wagers of 1.2.17 (2 Nov): loading a wager on View Wagers took 2 s, nearly all OCR, and the time box after it 5-6 s.
+
+### Changed
+- **The time box: Tab after 1.5 s, not 4 s** (`TIME_BOX_SLASH_SECS`). From 2 Nov 17:14 Betty on the cashier till
+  mostly ignores '/' on race entry, and the Tab of 1.2.17 brings the box up, but only after waiting the whole
+  `NAV_TIMEOUT` for '/': all 52 wagers of 1.2.17 waited it. Where '/' works (the manager till, 3 Nov) the box was up
+  within a second, so nothing changes there. New check: `nav_cases.py` section 14.
+- **A wager's details on View Wagers read 3x faster** (`read_wager_details`): its number, struck time and Payment
+  are read by three Tesseracts at once instead of one after another, 0.22 s instead of 0.66 s. A wager is still taken
+  only when two reads in a row agree (most took 2 reads, some up to 6 while Betty drew it).
+
 ## [1.2.22] - 2026-11-03
 
 ### Removed

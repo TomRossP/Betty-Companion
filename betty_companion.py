@@ -1,4 +1,4 @@
-__version__ = "1.2.22"
+__version__ = "1.2.23"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -30,6 +30,7 @@ import sys
 import tkinter as tk
 import threading
 import atexit
+import concurrent.futures
 import glob
 import shutil
 import stat
@@ -4280,12 +4281,21 @@ def read_unedited_queue(img: Any) -> list[str]:
     return numbers
 
 
+# The three boxes of a wager's details are read at once, each by its own Tesseract: one after another a read took
+# 0.66 s, and a wager is read at least twice (two reads must agree) before it is taken (cashier till, 2 Nov)
+_WAGER_OCR_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="wager ocr")
+
+
 def read_wager_details(img: Any) -> dict:
     """The loaded wager on View Wagers: number, struck time (upper timestamp) and Payment in pence (None if unread)."""
-    number = normalise_wager_number(_ocr_box(img, VW_WAGER_NUMBER_BOX, _DIGITS_CFG, invert=True))
-    stamps = re.findall(r'(\d{1,2}):(\d{2}):(\d{2})', _ocr_box(img, VW_TIMESTAMPS_BOX, '--psm 6'))
+    reads = [_WAGER_OCR_POOL.submit(_ocr_box, img, VW_WAGER_NUMBER_BOX, _DIGITS_CFG, invert=True),
+             _WAGER_OCR_POOL.submit(_ocr_box, img, VW_TIMESTAMPS_BOX, '--psm 6'),
+             _WAGER_OCR_POOL.submit(_ocr_box, img, VW_SLIP_SUMMARY_BOX, '--psm 6', scale=2)]
+    number_text, stamps_text, summary_text = (r.result() for r in reads)
+    number = normalise_wager_number(number_text)
+    stamps = re.findall(r'(\d{1,2}):(\d{2}):(\d{2})', stamps_text)
     struck = f"{int(stamps[0][0]):02d}:{stamps[0][1]}" if stamps else None
-    summary = without_thousands_commas(_ocr_box(img, VW_SLIP_SUMMARY_BOX, '--psm 6', scale=2))
+    summary = without_thousands_commas(summary_text)
     pay = re.search(r'Payment:\s*\D{0,2}\s*(\d+)\.(\d{2})', summary)
     return {'number': number, 'struck_time': struck,
             'struck_clock': ":".join(stamps[0]) if stamps else None,
@@ -4303,6 +4313,9 @@ class NavError(Exception):
 
 
 NAV_TIMEOUT = 4.0     # longest wait for Betty to change screen after one key press or click
+# '/' brought the time box up within a second whenever it did; from 2 Nov 17:14 Betty mostly ignores it and Tab brings
+# it up instead. Waiting the whole NAV_TIMEOUT before Tab cost every wager 4 s on the cashier till (1.2.17, 52 of 52)
+TIME_BOX_SLASH_SECS = 1.5
 _nav_recovering = False  # backing out after a stop: keys are allowed although the watcher is stopping
 _home_unreachable = False  # the last go_home() ended away from Home: the watcher stops instead of trying again
 ESC_UNCHANGED_LIMIT = 2  # Esc presses in a row that leave Betty on the same screen before go_home gives up
@@ -4592,7 +4605,7 @@ def open_race_entry() -> str:
         raise SlipNotShowing("Betty opened the bet in its broken state (no slip image)")
     if screen == SCREEN_RACE_ENTRY:
         betty_press('/')  # '/' toggles the time box: pressed once, then checked
-        screen = wait_for_screen({SCREEN_RACE_ENTRY_READY})
+        screen = wait_for_screen({SCREEN_RACE_ENTRY_READY}, timeout=TIME_BOX_SLASH_SECS)
         box_open = _signals_pass(np.array(pyautogui.screenshot().convert('RGB')), [RACE_ENTRY_TIME_BOX])
         if screen != SCREEN_RACE_ENTRY_READY and not (screen == SCREEN_UNKNOWN and box_open):
             # Betty now and then shows something else where the time box should be; Tab brings the box up (user, 2 Nov)
