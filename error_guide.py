@@ -82,11 +82,28 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "A selection was read without the meeting, the time or the number needed to find it in Betty.",
      CHECK_BY_HAND),
     # --- Entering selections ---
-    (r"Betty has no price for it yet",
-     "No price in Betty yet",
-     "The customer took a price, but Betty shows no price for that runner yet (early prices not up), so it can't "
-     "be entered at the price.",
-     "Enter it by hand at the price taken, as the shop does."),
+    (r"Betty put it on at SP|Betty has no price for it yet",
+     "Betty gave no price, and it couldn't be typed",
+     "The customer took a price, but Betty put the runner on at SP, usually because of trouble with its prices. The "
+     "program types the written price itself when two reads of the slip agree on it; the message says why it "
+     "couldn't this time. Check the price on the slip yourself, especially at its edge, where digits get cut off.",
+     "Enter it by hand at the price taken: click the price on the betslip, type it (7/2 is 7.2), press Enter, then "
+     "'Override with entered price'."),
+    (r"the race-list check made",
+     "A hard-to-read name matched a runner already on the slip",
+     "A selection's name couldn't be read, and the check against the race's runners chose one that's already another "
+     "selection on the slip. It's probably a different runner, often because no time was written next to it.",
+     "Read that selection on the slip yourself and enter the wager by hand."),
+    (r"a line accumulator",
+     "A line accumulator",
+     "One accumulator over groups of runners, one from each group making a line, so the cost is the groups' sizes "
+     "multiplied. The slip's sums are right; the program can't enter these.",
+     "Enter it by hand as the shop does."),
+    (r"price check box opened for a typed price",
+     "Betty's price box wouldn't take the typed price",
+     "A price was typed on the betslip because Betty gave none, and Betty's price check box couldn't be answered "
+     "with 'Override with entered price'.",
+     "Look at the betslip and enter the wager by hand."),
     (r"is not in Betty's runner list",
      "Race not in Betty's runner list",
      "Betty's runner list has no race at that meeting and time. The time may be written wrong, the race may have "
@@ -156,7 +173,13 @@ GUIDE: list[tuple[str, str, str, str]] = [
     (r"price check box stayed open",
      "Betty's price check box wouldn't close",
      "Betty asked about the price (\"The price you entered was not correct...\"). Enter didn't close the box, and nor "
-     "did 'Override with entered price' (or that button wasn't there).",
+     "did the button the program clicked next: a Forward price, a Back price 3 seconds old or less, or 'Override with "
+     "entered price' (or that button wasn't there).",
+     "Open the wager in Betty, choose the price by hand, and finish the bet."),
+    (r"price check box has a price button that couldn't be read",
+     "Betty's price check box couldn't be read",
+     "Betty asked about the price, and one of its price buttons didn't read. The program chooses by what the buttons "
+     "say, so it didn't guess.",
      "Open the wager in Betty, choose the price by hand, and finish the bet."),
     (r"left unedited part-way",
      "Wager stopped part-way",

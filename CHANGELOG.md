@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.2.28] - 2026-11-05
+
+### Fixed
+- **A hard-to-read name could become a runner already on the slip** (9.2467175, 5 Nov). "14-1 HARROW ON THE" had no time written. The reader saw `MARROW ON THE`, took 4:30 from the line above, and the race-list check chose Mountain Of Light, already on the slip at 9-1. That made a false same-race clash, and the bets still cost what was paid. It only stopped because 1.2.19 couldn't enter Perm 5-Folds, a stop 1.2.24 removed. A runner chosen by the race-list check that is also another selection on the slip now sends the wager to staff, saying which. So does a pick with no time written beside it (the time borrowed from the line above) that lands in the same race as another selection, as any other runner in that 4:30 would have made the same false clash. A runner written twice and read clearly both times isn't affected, and nor are two runners in a race when the time was written.
+- `recheck_cases.py`: this slip's selections, in either order, both cases; a pick with its own time written in that race still goes through.
+
+## [1.2.27] - 2026-11-05
+
+### Changed
+- **The price box with no Price when struck** (user, 5 Nov): a **Forward** price if there is one (Forward 1 when there are two), otherwise **Override with entered price**. A **Back** price never, unless it's 3 seconds old or less. Price when struck stays first, and Enter is still tried first. On 9.2467105 the box offered Back 2, Back 1 and Forward 1, and the program had always gone to Override.
+- A Forward beats a Back price 3 seconds old when both are there. A Back price's age is read twice, and any wording other than plain seconds counts as too old: no real box under a minute old has been seen yet, so "3 secs old" and "0 mins 3 secs old" are what's expected.
+- A price button that doesn't read goes to staff with nothing clicked, as the choice might be wrong without it. Should Enter ever fail on a box that has Price when struck, that button is clicked, not Override. A typed line still gets Override at once.
+
+### Fixed
+- **The price box opening at F8** (9.2467105: Far Too Fizzy). It was never answered there: the program backed out with Cancel, tried again, and left the wager for staff. It's now answered by the same rule, and F8 is pressed again if Betty stays on the betslip. Up to 3 times, then backed out as before. Not yet seen live: whether Betty goes on by herself, or whether the box still opens at F8 after a Forward price.
+- The box just before F8 is now told by the price its Override button names, as 1.2.25 said it was. The check it was written into is no longer called, so a typed line could have had Enter pressed there.
+- `test_price_box_rule.py` (in `run_all_tests.py`), with the real boxes on screens 64 and 65. The staff guide explains the new reason.
+
+## [1.2.26] - 2026-11-05
+
+### Added
+- **A price is read twice before it's typed.** A typed price is paid on as it stands, and on 9.2466814 the slip reader took a 15/1 or 25/1 at the slip's clipped edge for 5/1 without marking it unclear, so 1.2.25 would have typed 5/1. Before typing, the price beside that selection is now read again on its own, from the same picture, without being told the first reading. It is typed only if that read agrees, is sure of every digit and sees nothing cut off. Otherwise the wager goes to staff, saying what it read. One small paid read per selection, a few seconds, only on selections Betty gave no price; once per selection per wager.
+- Tried on the three real slips from 5 Nov (12 prices): Final Straw came back "5/1, cut off, not sure", so it goes to staff. Star Bayside Boy's 18/1 came back not sure, so it goes to staff too. The other 10 agreed and were sure.
+
+## [1.2.25] - 2026-11-05
+
+Betty's prices had trouble today: three wagers went to staff as "Betty has no price for it yet", though other runners in those races showed prices and another wager had 7/4 on one of them 40 minutes before.
+
+### Added
+- **The written price is typed when Betty gives none** (user, 5 Nov). When a price was taken and Betty puts the selection on at SP, the price on the betslip line is clicked, the written price typed (2/1 is 2.1, 7/2 is 7.2, 11/10 is 11.10, evens is 1.1) and Enter pressed, then **Override with entered price** on Betty's box. Before it went to staff (9.2466814, 9.2466824, 9.2466825).
+- Keys go only once Betty's focus box is on that line, as a digit anywhere else picks a runner from the list. The line must then show that exact price. If the line won't take the focus, the price isn't a plain one, the slip reader marked it unclear, or the line shows anything else, the wager goes to staff (nothing placed), saying why.
+- **The price box on a typed line keeps the typed price.** Betty opens it whenever that line is touched again, as when guaranteeing it, and Enter there would swap the customer's price for the price when struck. Guaranteeing clicks Override on a typed line and still presses Enter on the others. A box whose line isn't known (just before F8) is told by the price its Override button names.
+- `test_typed_price.py` (in `run_all_tests.py`): a stand-in till on the real screen of Presley at SP with Betty's real boxes, where Enter on a box takes the price when struck.
+
+### Fixed
+- **Line accumulators no longer blamed on the customer** (9.2466815, 9.2466816). "10p line win acc" on groups of 4, 4, 4 and 2 plus singles is 128 lines, £12.80, as paid; it was costed at 10p and staff were told "their own sums don't match". It now says so ("a line accumulator: 4 x 4 x 4 x 2 = 128 lines at 10p is £12.80, as paid..."), on the first read, without a paid rescan. The program still can't enter them.
+- "Their own sums don't match the bets written" now reads "check the bets as read against the slip": the misreading may be ours.
+- Old pictures that can't be removed are said once a session, not once per picture (the cashier till listed 30+ each time).
+- The staff guide explains the new reasons.
+
 ## [1.2.24] - 2026-11-03
 
 ### Added
