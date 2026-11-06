@@ -176,6 +176,11 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Betty asked about the payment",
      "Betty showed a payment question while selections were being entered. The program never answers these.",
      "Look at Betty's question and finish the wager by hand."),
+    (r"combination forecast needs at least",
+     "A combination forecast with too few selections",
+     "A combination forecast has at least 3 selections, and fewer were read. One may have been missed: on 2 Betty would take it as a "
+     "reversed forecast, and the money could still add up.",
+     "Check the slip and enter the wager by hand."),
     # --- Football on a handwritten slip ---
     (r"but Betty has no match of theirs",
      "No match for that team in Betty",

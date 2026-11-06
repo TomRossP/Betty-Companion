@@ -1,4 +1,4 @@
-__version__ = "1.3.3"
+__version__ = "1.3.4"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -1702,8 +1702,11 @@ def reconcile_bet_scoping_qualifiers(
         #   and bet already has N runners, do NOT strip below N.
         # - Only applies when multiple separate bets exist on the slip (e.g. interleaved bet entries).
         line_nums_read = not any(s.get('_line_guessed') for s in selections)
+        # With no bet line below this one, a runner below it has no other bet to belong to: it's this one's, written under its
+        # stake (9.2468449, 6 Nov: '£1 c/fc 2 / 3 / 5' lost the 5 and the money was made up by making another bet each way)
+        bet_line_below = effective_line is not None and any((other.get('line_num') or 0) > effective_line for other in bets_list)
         if (len(bets_list) > 1 and effective_line is not None and line_nums_read and len(preceding_selections) > 0
-                and len(preceding_selections) < len(selections)):
+                and len(preceding_selections) < len(selections) and bet_line_below):
             norm_b = normalize_bet_type(str(bet.get('bet_type', '')), desc, selection_names(bet))
             req_selections_map = {
                 'single': 1, 'double': 2, 'treble': 3,
@@ -1718,7 +1721,7 @@ def reconcile_bet_scoping_qualifiers(
             # Fewest selections the bet type can be: a cut below this is wrong, the runners below belong to the bet.
             # 9.2448236 (23 Oct): '£10 S/F/C' with 'TRAPS 4-5' on the line under it lost trap 5, the lone-selection
             # rule made the forecast a £10 win single, and the money still matched, so it was placed.
-            min_n = req_n or {'straight forecast': 2, 'reversed forecast': 2, 'combination forecast': 2,
+            min_n = req_n or {'straight forecast': 2, 'reversed forecast': 2, 'combination forecast': COMBINATION_FORECAST_MIN,
                               'tricast': 3, 'combination tricast': 3, 'accumulator': 2}.get(norm_b)
 
             preceding_names = {s.get('name') for s in preceding_selections if s.get('name')}
@@ -2721,7 +2724,13 @@ def process_slip_reading(bets_data: dict, img_str: str, payment_pence: int | Non
             bet['cost_pence'] = calculate_bet_cost_pence(bet)
         # Only an unambiguous flip: with two bets of the same cost, either flip fits the money, and the wrong one would
         # be placed each way with nothing left to catch it (review R1). Then the money check sends it to staff.
-        if len(flips) == 1:
+        # And only one the slip itself bears out: the money alone made '£4 3' each way, hiding a selection lost from another bet,
+        # and it was placed wrong (9.2468449, 6 Nov). The line is read again on its own, not told what's wanted.
+        wanted = ("win" if bets_list[flips[0]].get('each_way') else "each way") if len(flips) == 1 else None
+        if wanted and stake_second_read(bets_list[flips[0]], img_str) != wanted:
+            print(f"[-] Total Stake Reconciliation Healer: Bet #{flips[0] + 1} as {wanted} would fit the money, but a second read of "
+                  "the line doesn't say so: not changed.")
+        elif len(flips) == 1:
             bet = bets_list[flips[0]]
             bet['each_way'] = not bet.get('each_way', False)
             bet['cost_pence'] = calculate_bet_cost_pence(bet)
@@ -3909,6 +3918,28 @@ def bets_reading_signature(bets_list: list[dict]) -> tuple:
                   b.get('cost_pence')) for b in bets_list or [])
 
 
+def stake_second_read(bet: dict, img_str: str | None) -> str | None:
+    """How one bet line's stake is placed, read again on its own: 'win' or 'each way', None unless the reader is sure."""
+    if not img_str:
+        return None
+    line = f"on line {bet['line_num']} of the writing (counting from the top), " if bet.get('line_num') else ""
+    answer = _ask_vision_json(
+        f"""You are checking one stake line on a handwritten betting slip. Find the bet line {line}first read as
+"{bet.get('description')}". Read only how the stake is placed, letter by letter from the ink: to win ('WIN', 'W', or nothing
+written, which means to win) or each way ('EW', 'E/W', 'E.W'). Don't work it out from the money or from other lines.
+Answer "high" confidence only if the letters are clear.
+Return JSON: {{"letters": "...", "stake": "win" or "each way", "confidence": "high" or "low"}}""",
+        img_str, "reader-chain",
+        {"type": "OBJECT", "properties": {"letters": {"type": "STRING"}, "stake": {"type": "STRING"},
+                                          "confidence": {"type": "STRING"}},
+         "required": ["letters", "stake", "confidence"], "propertyOrdering": ["letters", "stake", "confidence"]},
+        f"Second read of the stake on '{bet.get('description')}'")
+    if not answer or str(answer.get('confidence')).lower() != 'high':
+        return None
+    stake = str(answer.get('stake')).lower()
+    return stake if stake in ('win', 'each way') else None
+
+
 def each_way_second_read(slip_data: list[dict], img_str: str, short_by: int) -> bool:
     """
     The money is short, and two scans read the same bets. A bet read as win that would cost exactly the shortfall more if
@@ -3916,22 +3947,7 @@ def each_way_second_read(slip_data: list[dict], img_str: str, short_by: int) -> 
     again on its own, not told what's expected. It's changed only if exactly one comes back each way, surely.
     """
     candidates = [b for b in slip_data if not b.get('each_way') and calculate_bet_cost_pence(b) == short_by]
-    found = []
-    for bet in candidates:
-        line = f"on line {bet['line_num']} of the writing (counting from the top), " if bet.get('line_num') else ""
-        answer = _ask_vision_json(
-            f"""You are checking one stake line on a handwritten betting slip. Find the bet line {line}first read as
-"{bet.get('description')}". Read only how the stake is placed, letter by letter from the ink: to win ('WIN', 'W') or each way
-('EW', 'E/W', 'E.W'). Don't work it out from the money or from other lines.
-Answer "high" confidence only if the letters are clear.
-Return JSON: {{"letters": "...", "stake": "win" or "each way", "confidence": "high" or "low"}}""",
-            img_str, "reader-chain",
-            {"type": "OBJECT", "properties": {"letters": {"type": "STRING"}, "stake": {"type": "STRING"},
-                                              "confidence": {"type": "STRING"}},
-             "required": ["letters", "stake", "confidence"], "propertyOrdering": ["letters", "stake", "confidence"]},
-            f"Second read of the stake on '{bet.get('description')}'")
-        if answer and str(answer.get('stake')).lower() == 'each way' and str(answer.get('confidence')).lower() == 'high':
-            found.append(bet)
+    found = [bet for bet in candidates if stake_second_read(bet, img_str) == 'each way']
     if len(found) != 1:
         print(f"[*] Second read of {len(candidates)} line(s) that could be each way: {len(found)} read so; nothing changed.")
         return False
@@ -8085,6 +8101,20 @@ def sports_selection(horse: dict, slip_words: str, struck_at: float, records: li
     return sel
 
 
+COMBINATION_FORECAST_MIN = 3  # on 2 Betty takes it as a reversed forecast, so it goes in and the money can still add up (9.2468449)
+
+
+def bet_shape_fault(slip: list[dict]) -> str | None:
+    """A bet that can't be what was read, whatever the money says: for staff rather than entered (user, 6 Nov)."""
+    for bet in slip:
+        if normalize_bet_type(str(bet.get('bet_type', ''))) == 'combination forecast':
+            runners = len({selection_key(h) if h.get('time') else str(h.get('name')) for h in bet.get('horses', [])})
+            if runners < COMBINATION_FORECAST_MIN:
+                return (f"a combination forecast needs at least {COMBINATION_FORECAST_MIN} selections, and only {runners} were read "
+                        f"for '{bet.get('description')}'")
+    return None
+
+
 def lock_sports_wager(scan: dict, details: dict) -> list[dict] | None:
     """
     A slip of football match bets, with the Sports switch on: each selection told from the team table and Betty's files,
@@ -8139,6 +8169,9 @@ def lock_wager(number: str, details: dict) -> list[dict]:
     _check_stop()
     if not scan['ok']:
         raise WagerForStaff(scan['reason'] or "the slip could not be read")
+    fault = bet_shape_fault(scan['slip_data'])
+    if fault:
+        raise WagerForStaff(fault)
     football = lock_sports_wager(scan, details)
     if football:
         final = sum(calculate_bet_cost_pence(b) for b in football)
@@ -8157,6 +8190,9 @@ def lock_wager(number: str, details: dict) -> list[dict]:
     final = sum(calculate_bet_cost_pence(b) for b in slip)
     if final != pay:
         raise WagerForStaff(f"after house rules the bets cost £{final / 100:.2f} but £{pay / 100:.2f} was paid")
+    fault = bet_shape_fault(slip)
+    if fault:
+        raise WagerForStaff(fault)
     return slip
 
 

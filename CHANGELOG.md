@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.4] - 2026-11-06
+
+Offline tests only: none of this has run on a till yet.
+
+### Fixed
+- **A combination forecast lost a selection, and an each way hid it** (9.2468449, placed wrong, 6 Nov). '£4 3', then '£1 c/fc 2 / 3 / 5', £10:
+  the 5, under the forecast's stake, was cut as "below the bet line", which left £6. The money was then made up by making the £4 single
+  each way, so £8 + £2 passed every check. A runner below the last bet line now stays with that bet.
+- **A combination forecast has at least 3 selections** (user, 6 Nov). None is cut below 3, and one read with fewer goes to staff instead of
+  being entered: on 2 Betty takes it as a reversed forecast, so it went in, and the money could still add up.
+- **A bet is no longer made each way, or win, by the money alone.** The line is read again on its own, without being told what would fit,
+  and changed only if that read says so. Otherwise the money check goes on as usual: a rescan, then staff.
+
 ## [1.3.3] - 2026-11-06
 
 Offline tests only: none of this has run on a till yet.
