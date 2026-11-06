@@ -195,14 +195,15 @@ class RacecardReader:
                 pass
         return sorted(runners, key=lambda r: (r["minutes"], r["meeting"], r["number"]))
 
-    def read(self) -> dict:
+    def read(self, runners: bool = True) -> dict:
         import betty_feed
         out = {"event": "_data", "files": [], "groups": meeting_groups([]), "runners": [], "error": "",
                "events_dir": betty_feed.events_folder()}
         try:
             out["files"] = racecard_files()
             out["groups"] = meeting_groups(betty_feed.todays_meetings())
-            out["runners"] = self.uk_irish_runners()
+            if runners:  # off times and results: transact.DBF and SETTDATA
+                out["runners"] = self.uk_irish_runners()
         except Exception as e:
             out["error"] = f"{type(e).__name__}: {e}"
         return out
@@ -776,6 +777,8 @@ class App:
         root.after(200, self.check_health)
         root.after(300, self.check_gemini)
         root.after(400, self.refresh_data)
+        if not self.manager_till:
+            self.tabs.bind("<<NotebookTabChanged>>", lambda e: self.refresh_data(force=True))
         root.after(500, self.reload_records)
         root.after(600, self.save_betty_drive)
         root.after(600, self._tail_log)
@@ -2467,9 +2470,17 @@ class App:
                              daemon=True).start()
 
     def refresh_data(self, force: bool = False):
-        if not self.data_busy:
+        """
+        The manager till: every minute. A cashier till reads Betty's files across the network: 230 MB a minute went from the manager till while
+        Companion was open there, and Betty froze for it (6 Nov), so it reads them for the Data and Runners tabs while they're on screen, and
+        until it has found today's racecards (the ready light needs them). Off times and results for the Runners tab alone.
+        """
+        tab = self.tabs.tab(self.tabs.select(), "text").strip()
+        wanted = self.manager_till or force or tab in ("Data", "Runners") or not self.data.get("files")
+        if wanted and not self.data_busy:
             self.data_busy = True
-            threading.Thread(target=lambda: self.inbox.put(self.reader.read()), daemon=True).start()
+            runners = self.manager_till or tab == "Runners"
+            threading.Thread(target=lambda: self.inbox.put(self.reader.read(runners=runners)), daemon=True).start()
         if not force and not self.closing:
             self.root.after(DATA_REFRESH_SECS * 1000, self.refresh_data)
 

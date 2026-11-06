@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.7] - 2026-11-06
+
+Offline tests only: **not yet run on a till**, so it isn't proven that this stops the reads. Watch the manager till's network with it open on the cashier.
+
+### Fixed
+- **A cashier till reads Betty's files only when it's asked to** (user, 6 Nov). About 230 MB a minute went from the manager till to the cashier, about 20 seconds at a time at the 12 MB/s a 100 Mbps link
+  allows, for as long as Companion was open there. All 6 freezes logged from 16:00 to 17:03 fell inside a read and ended as it ended, and closing Companion on the cashier stopped the reads. The launcher's Data
+  refresh ran every minute from the moment it opened, the same timing. What it reads adds up to about 6 MB when measured on the manager till, so what makes up the rest isn't known. A cashier till now reads
+  for the Data and Runners tabs while they're on screen, and until it has found today's racecards. The manager till is unchanged.
+
 ## [1.3.6] - 2026-11-06
 
 Offline tests and a few paid reads of the real slips: **none of this has run on a till** yet. The race 12 hours ago in particular is written

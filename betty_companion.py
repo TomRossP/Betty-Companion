@@ -1,4 +1,4 @@
-__version__ = "1.3.6"
+__version__ = "1.3.7"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
