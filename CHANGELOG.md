@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.3] - 2026-11-06
+
+Offline tests only: none of this has run on a till yet.
+
+### Added
+- **Search on the log** (System, Log): type and every match is marked, with Next and Previous, Enter and Ctrl+F.
+- **Past results tab** (user, 6 Nov): a day, a meeting, a race, then its full result as far as Betty records it: place, number, runner,
+  SP and the last price in her file. One compressed file a day (about 50 KB), kept for good, in `Documents\BettyCompanion Records\past_results`, outside the
+  program's folder so a new version finds them. On starting, any of the last 60 days not on file is filled in from `Events\ARCHIVE`
+  and SETTDATA. A file is never overwritten by one with fewer results. Virtual races are left out.
+- **Sports prices tab** (user, 6 Nov: a slip with no price on a football match, and no way of seeing what it was): a day, a search, an
+  event, its markets, then each selection's first and latest price and its price history, with the winner in green. Every change of
+  price, copied every minute from Betty's monthly price history (`DBF\PHST`), with the last 30 days on the first start. Winners from
+  SETTDATA, kept as Betty only holds about three weeks. In `sports_prices.db`, kept 30 days after the event (System, Shop settings).
+- **The program knows a manager till from a cashier till**: Betty's data on its own disk, or across the network. The records are kept on
+  the manager till alone, and a cashier till doesn't show their tabs or read anything for them.
+
+### Fixed
+- **The events page as pictures** ("Place Your Bets On", screen 70) is named as the events page: what opens first on entering a bet to
+  edit, passed by pressing 1.
+- **Sports kick-off times.** Betty's run 8 hours ahead, so a match kicked off within the last 8 hours could count as still to come when
+  a handwritten football bet was matched. The Master Index's own results were not affected.
+
 ## [1.3.2] - 2026-11-06
 
 Offline tests only: none of this has run on a till yet.

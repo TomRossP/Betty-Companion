@@ -45,7 +45,7 @@ a = Analysis(  # noqa: F821
            (os.path.join(ROOT, "assets", "betty.ico"), "assets")],
     # Imported inside functions (the window loads the program only with --backend)
     hiddenimports=["betty_companion", "rules_engine", "meetings_manager", "betty_feed", "relay_link", "relay_logs",
-                   "error_guide", "master_index", "sports_names"],
+                   "error_guide", "master_index", "sports_names", "till_records"],
     # Installed on the build PC but never used: kept out (OpenCV alone is ~70 MB). Also pulled in but never used:
     # setuptools (PyInstaller's hook), numpy's test tools (loaded only when asked for; they bring win32pdh), and
     # Pillow's AVIF, WebP and colour-profile support (Pillow skips a missing format plugin). ~10 MB.

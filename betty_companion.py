@@ -1,4 +1,4 @@
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -21,6 +21,7 @@ load_dotenv(app_paths.env_file())
 
 import re
 import base64
+import calendar
 import io
 import json
 import requests
@@ -4149,6 +4150,12 @@ MODAL_SIGNATURES = {
         'label': ((415, 312, 430, 40), ("priceyouentered", "notcorrect")),
     },
 }
+# The events page as pictures (screen 70, user, 6 Nov): what opens first on entering a bet to edit, as the plain grid of
+# buttons does. It serves only to be passed: 1 goes to folder 1 and the bet edit, as on the grid
+EVENT_MENU_PICTURES = [((875, 655, 78, 75), (255, 255, 128), 0.7),   # Cancel
+                       ((755, 655, 78, 75), (255, 255, 128), 0.7),   # More Events
+                       ((875, 562, 78, 72), (193, 0, 0), 0.7)]       # Pools Betting
+EVENT_MENU_PICTURES_LABEL = ((95, 8, 395, 44), ("placeyourbets",))
 # The bet edit, nothing else said: its header, Choose Bet, Cancel Bet and the betslip's cream panel, no list on the left
 BET_EDIT_SIGNS = [_BETTY_CYAN_HEADER, _CHOOSE_BET_BUTTON, ((940, 634, 80, 110), (0, 128, 0), 0.5),
                   ((880, 140, 470, 300), (255, 255, 208), 0.6)]
@@ -4208,8 +4215,10 @@ def _label_reads(img: Any, box: tuple, keywords: tuple) -> bool:
     return any(k in letters for k in keywords)
 
 
-def _bet_edit_or_unknown(arr: Any) -> str:
-    """No screen's signature fits: the bet edit with nothing on its left, or a screen the program doesn't know."""
+def _named_otherwise(img: Any, arr: Any) -> str:
+    """No screen's signature fits: the events page as pictures, the bet edit with nothing on its left, or unknown."""
+    if _signals_pass(arr, EVENT_MENU_PICTURES) and _label_reads(img, *EVENT_MENU_PICTURES_LABEL):
+        return SCREEN_EVENT_MENU
     return SCREEN_BET_EDIT_BLANK if _signals_pass(arr, [*BET_EDIT_SIGNS, BET_EDIT_NO_LIST]) else SCREEN_UNKNOWN
 
 
@@ -4232,10 +4241,10 @@ def detect_screen(img: Any = None) -> str:
     matches = [name for name, sig in SCREEN_SIGNATURES.items() if name != SCREEN_REUSE_PANEL
                and _signals_pass(arr, sig['colours']) and _signals_absent(arr, sig.get('absent', []))]
     if len(matches) != 1:
-        return _bet_edit_or_unknown(arr)
+        return _named_otherwise(img, arr)
     name = matches[0]
     if not _label_reads(img, *SCREEN_SIGNATURES[name]['label']):
-        return _bet_edit_or_unknown(arr)
+        return _named_otherwise(img, arr)
     if name == SCREEN_RACE_ENTRY:
         if _signals_pass(arr, [RACE_ENTRY_BROKEN_SLIP]) and _label_reads(img, *RACE_ENTRY_BROKEN_LABEL):
             return SCREEN_RACE_ENTRY_BROKEN
@@ -8086,7 +8095,7 @@ def lock_sports_wager(scan: dict, details: dict) -> list[dict] | None:
         return None
     reading = _last_reading or {}
     slip_words = " ".join(str(t) for t in reading.get('lines') or [])
-    struck_at = time.mktime(time.strptime(f"{time.strftime('%Y-%m-%d')} {details['struck_time'][:5]}", "%Y-%m-%d %H:%M"))
+    struck_at = calendar.timegm(time.strptime(f"{time.strftime('%Y-%m-%d')} {details['struck_time'][:5]}", "%Y-%m-%d %H:%M"))
     records, runners = sports_card.records(), racecard_manager.get_runners()
     locked: dict[int, dict] = {}
     for bet in scan['slip_data']:

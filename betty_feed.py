@@ -350,6 +350,9 @@ def decode_sports_feed(data: bytes) -> list[dict]:
     for mi in range(n_meetings):
         mb = HEADER_SIZE + mi * MEETING_STRIDE
         event = _cstr(data[mb + 11: mb + 37])
+        # Betty's times run ahead of the clock by what's left over in her midnight (8 hours on 6 Nov: the 12:40 at Aintree is
+        # held as 20:40, Bristol Rovers' 19:30 kick-off as 03:30 next day). 'kickoff' is the local date and time, as if UTC
+        ahead = struct.unpack_from("<I", data, mb + 37)[0] % 86400
         for ri in range(struct.unpack_from("<H", data, mb + 42)[0]):
             rb = mb + RACE_FIRST_OFF + ri * RACE_STRIDE
             if rb + RACE_STRIDE > runner_base:
@@ -364,7 +367,7 @@ def decode_sports_feed(data: bytes) -> list[dict]:
                 if off + RUNNER_STRIDE > len(data):
                     break
                 top, bottom = struct.unpack_from("<HH", data, off + RUNNER_PRICE_OFF)
-                records.append({"event": event, "market": market, "starts": starts,
+                records.append({"event": event, "market": market, "starts": starts, "kickoff": starts - ahead if starts else 0,
                                 "result": _cstr(data[off + RUNNER_NAME_OFF: off + RUNNER_STRIDE]),
                                 "price": f"{top}-{bottom}" if bottom else ""})
     return records
@@ -543,6 +546,70 @@ def decode_placings(rp1: str) -> list[dict]:
     for p in placed:
         p["dead_heat"] = sum(q["place"] == p["place"] for q in placed) > 1
     return placed
+
+
+class SettledTable:
+    """
+    All of SETTDATA, for looking back: Betty keeps about three weeks of it. A race is found by its event id, or by its meeting and
+    time within the days after it, as the Tote's feed gives a race another id than the one it's settled under, and a row's date is
+    when it last changed, not the race's (30 Oct: Newmarket 11:35 is 71021552 on the card, 67703288 here, dated 31 Oct).
+    """
+    FOLLOWING_DAYS = 3
+
+    def __init__(self, dbf_dir: str | None = None):
+        self.path = os.path.join(dbf_dir or dbf_folder(), "SETTDATA.DBF")
+        self.by_id: dict[int, dict] = {}
+        self.by_race: dict[tuple, list[dict]] = {}
+        self.oldest = ""
+        with open(self.path, "rb") as f:
+            n, header_len, rec_len = struct.unpack_from("<IHH", f.read(12), 4)
+            f.seek(32)
+            self.fields, pos = {}, 1
+            while (desc := f.read(32)) and desc[0] != 0x0D:
+                self.fields[desc[:11].split(b"\0")[0].decode("latin-1").upper()] = (pos, desc[16])
+                pos += desc[16]
+            f.seek(header_len)
+            blob = f.read(n * rec_len)
+        for i in range(0, len(blob) - rec_len + 1, rec_len):
+            rec = blob[i: i + rec_len]
+            event = self._get(rec, "EVENTID")
+            if rec[0:1] == b"*" or not event.isdigit():
+                continue
+            row = {"event": int(event), "date": self._get(rec, "LASTDATE"), "rec": rec}
+            self.by_id[row["event"]] = row
+            self.by_race.setdefault((self._get(rec, "MEETING").lower(), self._get(rec, "EVENTNAME")), []).append(row)
+            if row["date"] and (not self.oldest or row["date"] < self.oldest):
+                self.oldest = row["date"]
+        with open(os.path.splitext(self.path)[0] + ".fpt", "rb") as memos:
+            memos.seek(6)
+            self.block = struct.unpack(">H", memos.read(2))[0]
+
+    def _get(self, rec: bytes, name: str) -> str:
+        at, size = self.fields[name]
+        return rec[at: at + size].decode("latin-1").strip()
+
+    def _placings(self, row: dict) -> list[dict]:
+        at, size = self.fields["RP1"]
+        raw = row["rec"][at: at + size]
+        first = struct.unpack("<I", raw)[0] if size == 4 else int(raw.strip() or 0)
+        if not first:
+            return []
+        with open(os.path.splitext(self.path)[0] + ".fpt", "rb") as memos:
+            memos.seek(first * self.block)
+            length = struct.unpack(">I", memos.read(8)[4:])[0]
+            return decode_placings(memos.read(min(length, 65536)).decode("latin-1"))
+
+    def placings(self, event_id: int, meeting: str, time_str: str, day: datetime.date, names: list[str]) -> list[dict]:
+        """A race's placings, [] if Betty holds none. Whichever way it's found, every placed runner must be in the race."""
+        last = (day + datetime.timedelta(days=self.FOLLOWING_DAYS)).strftime("%Y%m%d")
+        rows = [self.by_id[event_id]] if event_id in self.by_id else []
+        rows += sorted((r for r in self.by_race.get((meeting.lower(), time_str), ()) if f"{day:%Y%m%d}" <= r["date"] <= last),
+                       key=lambda r: r["date"])
+        for row in rows:
+            placed = self._placings(row)
+            if placed and all(any(_same_name(p["name"], n) for n in names) for p in placed):
+                return placed
+        return []
 
 
 class BettyResults:

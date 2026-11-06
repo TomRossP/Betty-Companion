@@ -23,6 +23,7 @@ import json
 import os
 import queue
 import re
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -38,12 +39,14 @@ from PIL import Image, ImageDraw, ImageFilter, ImageTk
 import app_paths
 import lessons
 import relay_logs
+import till_records
 
 WINDOW_TITLE = "Betty Companion"
 SHOP_SETTINGS = [  # (setting, label, default): shown in System, Settings; the defaults are the program's own
     ("WATCHER_POLL_SECS", "Seconds between looks at View Wagers", 5.0),
     ("STAFF_IDLE_RESUME_SECS", "Seconds before resuming after staff use the till", 60),
     ("BETTY_TAKE_FRONT_SECS", "Seconds with nobody at the till before Betty is taken over", 300.0),
+    ("SPORTS_KEEP_DAYS", "Days of sports prices kept (manager till)", 30),
     ("HOME_RETRY_SECS", "Seconds between tries to get back to Home", 60.0),
     ("SCAN_TIMEOUT_SECS", "Slip reader time limit (seconds)", 90),
     ("RECHECK_TIMEOUT_SECS", "Selection check time limit (seconds)", 45),
@@ -53,6 +56,8 @@ SHOP_SETTINGS = [  # (setting, label, default): shown in System, Settings; the d
     ("STAFF_JOURNAL_DAYS", "Days of staff entries kept", 30),
 ]
 REQUIRED_SCREEN = (1366, 768)
+RECORDS_SECS = 60        # Betty's sports prices are looked at this often (user, 6 Nov)
+RESULTS_RECORD_SECS = 300  # today's past results written this often
 SCREEN_NAMES = {"RACE_LIST": "Bet edit: runner list open", "BET_EDIT_BLANK": "Bet edit: nothing on the left",
                 "RACE_ENTRY": "Bet edit: race entry", "RACE_ENTRY_READY": "Bet edit: race entry, time box ready",
                 "RACE_ENTRY_EXHAUSTED": "Bet edit: no more meetings at that time"}  # as staff call them (user, 6 Nov)
@@ -753,7 +758,15 @@ class App:
         self._build_system()
         self._build_data()
         self._build_runners()
+        self.manager_till = till_records.is_manager_till()
+        if self.manager_till:  # a cashier till has no use for them, and reading them across the network slows Betty (user, 6 Nov)
+            self._build_past_results()
+            self._build_sports_prices()
         self._build_help()
+        self.price_book = None
+        self.info["till"].configure(text="Manager till: keeps the past results and sports prices" if self.manager_till else "Cashier till")
+        if self.manager_till:
+            self.start_records()
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self._drain)
@@ -842,7 +855,7 @@ class App:
         info.pack(fill="x", pady=(16, 8))
         self.info: dict[str, ttk.Label] = {}
         for row, (key, label) in enumerate([("program", "Program"), ("watcher", "Watcher"), ("screen", "Betty shows"),
-                                            ("wager", "Wager"), ("queue", "Waiting"), ("message", "Last message"),
+                                            ("wager", "Wager"), ("queue", "Waiting"), ("till", "This till"), ("message", "Last message"),
                                             ("outcome", "Last outcome"), ("reader", "Slip reader")]):
             ttk.Label(info, text=label, style="Head.TLabel", width=13).grid(row=row, column=0, sticky="nw", pady=2)
             self.info[key] = ttk.Label(info, text="", style="Big.TLabel", wraplength=640, justify="left")
@@ -1002,6 +1015,20 @@ class App:
         self.log_name = ttk.Label(top, text="", foreground="#546E7A")
         self.log_name.pack(side="left", padx=10)
         RoundButton(top, "Open logs folder", lambda: self._open(app_paths.log_dir())).pack(side="right")
+        finder = ttk.Frame(log_tab)
+        finder.pack(fill="x", pady=(6, 0))
+        ttk.Label(finder, text="Search").pack(side="left")
+        self.log_search = tk.StringVar()
+        entry = ttk.Entry(finder, textvariable=self.log_search, width=36)
+        entry.pack(side="left", padx=6)
+        RoundButton(finder, "Next", lambda: self.find_in_log(1)).pack(side="left")
+        RoundButton(finder, "Previous", lambda: self.find_in_log(-1)).pack(side="left", padx=6)
+        self.log_found = ttk.Label(finder, text="", foreground="#546E7A")
+        self.log_found.pack(side="left", padx=6)
+        self.log_search.trace_add("write", lambda *a: self.mark_log_search(jump=True))
+        entry.bind("<Return>", lambda e: self.find_in_log(1))
+        entry.bind("<Shift-Return>", lambda e: self.find_in_log(-1))
+        self.log_search_entry = entry
         body = ttk.Frame(log_tab)
         body.pack(fill="both", expand=True, pady=(6, 0))
         self.log_text = tk.Text(body, wrap="none", font=("Consolas", 9), state="disabled", bg="#FAFAFA")
@@ -1011,6 +1038,11 @@ class App:
         ys.pack(side="right", fill="y")
         xs.pack(side="bottom", fill="x")
         self.log_text.pack(fill="both", expand=True)
+        self.log_text.tag_configure("found", background="#FFF59D")
+        self.log_text.tag_configure("found_now", background="#FFB300")
+        self.log_text.tag_raise("found_now", "found")
+        self.log_text.bind("<Control-f>", lambda e: (self.log_search_entry.focus_set(), "break")[1])
+        self.log_hits: list[str] = []
 
         # Errors, explained
         err_tab = ttk.Frame(inner, padding=6)
@@ -1055,6 +1087,236 @@ class App:
 
         self._build_training(inner)
         self._build_settings(inner)
+
+    def _build_past_results(self):
+        """Past results: a day, a meeting, a race, and its full result as far as Betty records it."""
+        tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(tab, text="  Past results  ")
+        top = ttk.Frame(tab)
+        top.pack(fill="x")
+        ttk.Label(top, text="Day", style="Head.TLabel").pack(side="left")
+        self.past_day = tk.StringVar()
+        self.past_days = ttk.Combobox(top, textvariable=self.past_day, state="readonly", width=14)
+        self.past_days.pack(side="left", padx=6)
+        self.past_days.bind("<<ComboboxSelected>>", lambda e: self.show_past_day())
+        self.past_note = ttk.Label(top, text="", foreground="#546E7A", wraplength=640, justify="left")
+        self.past_note.pack(side="left", padx=8)
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True, pady=(8, 0))
+        self.past_meetings = self._tree(body, [("group", "Group", 90), ("meeting", "Meeting", 130)], height=18)
+        self.past_meetings.frame.pack(side="left", fill="y")
+        self.past_races = self._tree(body, [("time", "Time", 50), ("done", "Result", 60)], height=18)
+        self.past_races.frame.pack(side="left", fill="y", padx=8)
+        self.past_result = self._tree(body, [("pos", "Place", 50), ("no", "No.", 40), ("name", "Runner", 210), ("sp", "SP", 60),
+                                             ("last", "Last price", 80)], height=18)
+        self.past_result.frame.pack(side="left", fill="both", expand=True)
+        self.past_meetings.bind("<<TreeviewSelect>>", lambda e: self.show_past_races())
+        self.past_races.bind("<<TreeviewSelect>>", lambda e: self.show_past_race())
+        self.past_data: dict = {"races": []}
+        self.past_rows: dict[str, dict] = {}
+
+    def refresh_past_days(self):
+        days = till_records.days_on_file()
+        self.past_days.configure(values=days)
+        if days and self.past_day.get() not in days:
+            self.past_day.set(days[0])
+            self.show_past_day()
+        elif not days:
+            self.past_note.configure(text="Nothing on file yet.")
+
+    def show_past_day(self):
+        self.past_data = till_records.load_day(self.past_day.get())
+        tree = self.past_meetings
+        tree.delete(*tree.get_children())
+        seen = []
+        for race in self.past_data.get("races", []):
+            if (race["group"], race["meeting"]) not in seen:
+                seen.append((race["group"], race["meeting"]))
+        for group, meeting in seen:
+            tree.insert("", "end", values=(group, meeting))
+        self.past_races.delete(*self.past_races.get_children())
+        self.past_result.delete(*self.past_result.get_children())
+        races = self.past_data.get("races", [])
+        self.past_note.configure(text=f"{len(races)} races, {sum(1 for r in races if r.get('settled'))} with results. "
+                                      f"Recorded {self.past_data.get('recorded', '')}.")
+
+    def show_past_races(self):
+        chosen = self.past_meetings.selection()
+        tree = self.past_races
+        tree.delete(*tree.get_children())
+        self.past_result.delete(*self.past_result.get_children())
+        self.past_rows = {}
+        if not chosen:
+            return
+        group, meeting = self.past_meetings.item(chosen[0], "values")
+        for race in self.past_data.get("races", []):
+            if race["group"] == group and race["meeting"] == meeting:
+                iid = tree.insert("", "end", values=(race["time"], "Yes" if race.get("settled") else "None yet"))
+                self.past_rows[iid] = race
+
+    def show_past_race(self):
+        chosen = self.past_races.selection()
+        tree = self.past_result
+        tree.delete(*tree.get_children())
+        if not chosen:
+            return
+        for run in self.past_rows[chosen[0]]["runners"]:
+            place = run.get("place")
+            tree.insert("", "end", values=(f"{place}{'=' if run.get('dead_heat') else ''}" if place else "",
+                                           run.get("number") or "", run.get("name", ""), run.get("sp", ""), run.get("price", "")))
+
+    def _build_sports_prices(self):
+        """Sports prices: a day, an event found by search, its markets, each selection's prices and who won, and a price history."""
+        tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(tab, text="  Sports prices  ")
+        top = ttk.Frame(tab)
+        top.pack(fill="x")
+        ttk.Label(top, text="Day", style="Head.TLabel").pack(side="left")
+        self.sport_day = tk.StringVar()
+        self.sport_days = ttk.Combobox(top, textvariable=self.sport_day, state="readonly", width=12)
+        self.sport_days.pack(side="left", padx=6)
+        self.sport_days.bind("<<ComboboxSelected>>", lambda e: self.show_sports_events())
+        ttk.Label(top, text="Search").pack(side="left", padx=(8, 0))
+        self.sport_search = tk.StringVar()
+        entry = ttk.Entry(top, textvariable=self.sport_search, width=24)
+        entry.pack(side="left", padx=6)
+        entry.bind("<Return>", lambda e: self.show_sports_events())
+        RoundButton(top, "Search", self.show_sports_events).pack(side="left")
+        self.sport_note = ttk.Label(top, text="", foreground="#546E7A", wraplength=430, justify="left")
+        self.sport_note.pack(side="left", padx=8)
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True, pady=(8, 0))
+        self.sport_events = self._tree(body, [("when", "Starts", 95), ("event", "Event", 170)], height=18)
+        self.sport_events.frame.pack(side="left", fill="y")
+        self.sport_markets = self._tree(body, [("market", "Market", 150), ("won", "Result", 50)], height=18)
+        self.sport_markets.frame.pack(side="left", fill="y", padx=8)
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True)
+        self.sport_prices = self._tree(right, [("sel", "Selection", 170), ("first", "First", 55), ("last", "Latest", 55),
+                                               ("moves", "Changes", 60), ("won", "Result", 55)], height=9)
+        self.sport_prices.frame.pack(fill="both", expand=True)
+        self.sport_prices.tag_configure("won", background="#C8E6C9")
+        ttk.Label(right, text="Price history of the selection chosen", style="Head.TLabel").pack(anchor="w", pady=(6, 2))
+        self.sport_history = self._tree(right, [("when", "When", 130), ("price", "Price", 70)], height=7)
+        self.sport_history.frame.pack(fill="both", expand=True)
+        self.sport_events.bind("<<TreeviewSelect>>", lambda e: self.show_sports_markets())
+        self.sport_markets.bind("<<TreeviewSelect>>", lambda e: self.show_sports_market())
+        self.sport_prices.bind("<<TreeviewSelect>>", lambda e: self.show_sports_history())
+        self.sport_event_rows: dict[str, tuple] = {}
+        self.sport_market_ids: dict[str, int] = {}
+        self.sport_sel_ids: dict[str, int] = {}
+
+    def refresh_sports_tab(self, stats: dict | None = None):
+        if not self.price_book:
+            return
+        try:
+            days = self.price_book.days()
+            self.sport_days.configure(values=["All days", *days])
+            if not self.sport_day.get() and days:
+                today = time.strftime("%Y-%m-%d")
+                self.sport_day.set(today if today in days else days[0])
+                self.show_sports_events()
+            counts = self.price_book.counts()
+            text = f"{counts['markets']:,} markets, {counts['prices']:,} prices. Looked {time.strftime('%H:%M')}"
+            self.sport_note.configure(text=text + (f": {stats['moves']:,} new prices." if stats else "."))
+        except sqlite3.Error as e:
+            self.sport_note.configure(text=f"Couldn't read the sports record: {e}")
+
+    def show_sports_events(self):
+        tree = self.sport_events
+        tree.delete(*tree.get_children())
+        self.sport_markets.delete(*self.sport_markets.get_children())
+        self.sport_prices.delete(*self.sport_prices.get_children())
+        self.sport_history.delete(*self.sport_history.get_children())
+        self.sport_event_rows = {}
+        if not self.price_book:
+            return
+        day = "" if self.sport_day.get() == "All days" else self.sport_day.get()
+        for kickoff, event, gone in self.price_book.events(day, self.sport_search.get().strip()):
+            when = time.strftime("%a %d %b %H:%M", time.gmtime(kickoff)) if kickoff else ""
+            iid = tree.insert("", "end", values=(when + (" off" if gone else ""), event))
+            self.sport_event_rows[iid] = (event, kickoff)
+
+    def show_sports_markets(self):
+        chosen = self.sport_events.selection()
+        tree = self.sport_markets
+        tree.delete(*tree.get_children())
+        self.sport_prices.delete(*self.sport_prices.get_children())
+        self.sport_history.delete(*self.sport_history.get_children())
+        self.sport_market_ids = {}
+        if chosen:
+            for market_id, name, settled in self.price_book.markets(*self.sport_event_rows[chosen[0]]):
+                self.sport_market_ids[tree.insert("", "end", values=(name or "(no name)", "Yes" if settled else ""))] = market_id
+
+    def show_sports_market(self):
+        chosen = self.sport_markets.selection()
+        tree = self.sport_prices
+        tree.delete(*tree.get_children())
+        self.sport_history.delete(*self.sport_history.get_children())
+        self.sport_sel_ids = {}
+        if chosen:
+            for s in self.price_book.selections(self.sport_market_ids[chosen[0]]):
+                won = "Won" if s["place"] == 1 else (f"Place {s['place']}" if s["place"] else "")
+                iid = tree.insert("", "end", values=(s["name"], s["first"], s["last"], s["moves"], won),
+                                  tags=("won",) if s["place"] == 1 else ())
+                self.sport_sel_ids[iid] = s["id"]
+
+    def show_sports_history(self):
+        chosen = self.sport_prices.selection()
+        tree = self.sport_history
+        tree.delete(*tree.get_children())
+        if chosen:
+            for at, price in self.price_book.history(self.sport_sel_ids[chosen[0]]):
+                tree.insert("", "end", values=(time.strftime("%a %d %b %H:%M:%S", time.gmtime(at)), price))
+
+    def start_records(self):
+        """The manager till's records, while this window is open: sports prices every minute, results every 5 minutes and today's
+        horse results, yesterday's each hour. Nothing on a cashier till: it has no tabs for them, and reads nothing for them."""
+        self.price_book = None
+        self.refresh_past_days()
+        if os.environ.get("BETTY_HEADLESS") == "1":  # the free tests: no records of made-up tills
+            return
+        try:
+            keep = int(app_paths.setting("SPORTS_KEEP_DAYS", till_records.SPORTS_KEEP_DAYS))
+            self.price_book = till_records.SportsPrices(keep_days=keep)
+        except (OSError, sqlite3.Error) as e:
+            self.sport_note.configure(text=f"Couldn't open the sports record: {e}")
+            return
+
+        def work():
+            last_results, last_yesterday, last_settled, last_pruned = 0.0, 0.0, 0.0, 0.0
+            try:
+                till_records.backfill()
+            except Exception as e:
+                print(f"[-] Past results: {e}", file=sys.stderr)
+            self.inbox.put({"event": "_records", "stats": None})
+            while not self.closing:
+                stats = None
+                try:
+                    stats = self.price_book.ingest()
+                    clock = time.time()
+                    if clock - last_settled >= RESULTS_RECORD_SECS:
+                        last_settled = clock
+                        self.price_book.settle()
+                    if clock - last_pruned >= 86400:
+                        last_pruned = clock
+                        self.price_book.prune()
+                    if clock - last_results >= RESULTS_RECORD_SECS:
+                        last_results = clock
+                        today = datetime.date.today()
+                        till_records.record_day(today)
+                        if clock - last_yesterday >= 3600:  # a late result or a resettled race, for as long as she has it
+                            last_yesterday = clock
+                            till_records.record_day(today - datetime.timedelta(days=1))
+                except Exception as e:
+                    print(f"[-] Records: {e}", file=sys.stderr)
+                self.inbox.put({"event": "_records", "stats": stats})
+                for _ in range(RECORDS_SECS * 2):
+                    if self.closing:
+                        return
+                    time.sleep(0.5)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _build_data(self):
         tab = ttk.Frame(self.tabs, padding=8)
@@ -1469,6 +1731,10 @@ class App:
             self.gemini = ev
             self._show_gemini()
             self.show_ready()
+        elif kind == "_records":
+            if self.manager_till:
+                self.refresh_past_days()
+                self.refresh_sports_tab(ev.get("stats"))
         elif kind == "_data":
             self.data_busy = False
             self.data = ev
@@ -1798,6 +2064,40 @@ class App:
 
     # --- System: logs, errors, staff entries ---
 
+    def mark_log_search(self, jump: bool = False):
+        """Every place the search text is in the log shown, not minding capitals; `jump`: to the first of them."""
+        t, text = self.log_text, self.log_search.get()
+        t.tag_remove("found", "1.0", "end")
+        t.tag_remove("found_now", "1.0", "end")
+        self.log_hits = []
+        if text:
+            at, count = "1.0", tk.IntVar()
+            while True:
+                at = t.search(text, at, stopindex="end", nocase=True, count=count)
+                if not at or not count.get():
+                    break
+                end = f"{at}+{count.get()}c"
+                t.tag_add("found", at, end)
+                self.log_hits.append(at)
+                at = end
+        self.log_hit = -1
+        self.log_found.configure(text=(f"{len(self.log_hits)} found" if self.log_hits else "Not found") if text else "")
+        if jump and self.log_hits:
+            self.find_in_log(1)
+
+    def find_in_log(self, step: int):
+        """To the next or previous place the search text is, round from the end to the start."""
+        if not self.log_hits:
+            self.mark_log_search()
+        if not self.log_hits:
+            return
+        self.log_hit = (self.log_hit + step) % len(self.log_hits)
+        at = self.log_hits[self.log_hit]
+        self.log_text.tag_remove("found_now", "1.0", "end")
+        self.log_text.tag_add("found_now", at, f"{at}+{len(self.log_search.get())}c")
+        self.log_text.see(at)
+        self.log_found.configure(text=f"{self.log_hit + 1} of {len(self.log_hits)}")
+
     def show_log(self):
         logs = session_logs()
         if self.log_choice.get() == "current":
@@ -1814,6 +2114,7 @@ class App:
         self.log_name.configure(text=f"{os.path.basename(path)}  (last written "
                                      f"{time.strftime('%d %b %H:%M', time.localtime(os.path.getmtime(path)))})")
         self._append_log(first=True)
+        self.mark_log_search()
 
     def _append_log(self, first: bool = False):
         try:

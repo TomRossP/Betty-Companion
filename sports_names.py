@@ -81,8 +81,9 @@ def match_bet(team: dict, records: list[dict], after: float, price: object = Non
     is listed, the first at the written price, else the first. Ready for the Master Index, as a Request A Bet's line is.
     """
     names = {clean(n) for n in (*team.get("till", []), team["name"])}
+    when = lambda r: r.get("kickoff", r.get("starts", 0))  # noqa: E731
     rows = sorted((r for r in records if clean(r.get("market")) in MATCH_MARKETS and clean(r.get("result")) in names
-                   and r.get("starts", 0) >= after), key=lambda r: r["starts"])
+                   and when(r) >= after), key=when)
     if not rows:
         return None
     written = str(price or "").replace("/", "-").strip().lower()
