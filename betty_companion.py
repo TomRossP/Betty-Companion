@@ -1,4 +1,4 @@
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -1610,6 +1610,10 @@ def recover_unemitted_interleaved_bets(
     return bets_list
 
 
+NAMES_A_BET = re.compile(r"\b(?:doub\w*|dbl\w*|dousl|dubs|treb\w*|9reb|greb|acc\w*|fold\w*|\d+\s*-?\s*folds?|perm\w*|trix\w*|patent|yank\w*|"
+                         r"lucky|heinz|goliath|canad\w*|forecasts?|tricasts?|cast|f/?c\w*|[srt]/?f\w*|cfc|rfc|sfc)\b", re.IGNORECASE)
+
+
 def reconcile_bet_scoping_qualifiers(
     bets_list: list[dict],
     selections: list[dict],
@@ -1744,6 +1748,9 @@ def reconcile_bet_scoping_qualifiers(
         if m_mult:
             mult_val = int(m_mult.group(1))
             inferred_n = infer_selection_count_from_multiplier(bet.get('bet_type', ''), mult_val)
+            # '6 x £1.50 E/W' on 6 selections, no bet type written: 6 singles (below), not the 4 runners that make 6 doubles
+            if mult_val == len(bet.get('horses', [])) and mult_val != 3 and not NAMES_A_BET.search(combined_text):
+                inferred_n = None
 
         # A qualifier must agree with the bet it is attached to. Customers' margin notes ('LAST 2', 'ABV 4') often
         # sit half a line off; a note that contradicts the bet belongs to a neighbouring line.
@@ -1869,7 +1876,14 @@ def reconcile_bet_scoping_qualifiers(
         elif has_treb_word and not (has_doub_word or has_acc_word):
             written_fold = 3
 
-        if is_fc_or_tri or keeps_written_type:
+        # 'N x' on N selections with no bet type written is N singles (user, 6 Nov). 6 x also makes six 5-folds at the same money, so
+        # nothing later would catch it (9.2468424: '6 x £1.50 E/W' taken for Perm 5-Folds). Not 3 x: a regular customer scrawls 'dbl'
+        # after it, which the reader can miss, and his go in right as doubles (user, 6 Nov), so that stays as it is below.
+        if mult_num == n_horses and n_horses >= 2 and n_horses != 3 and not is_fc_or_tri and not NAMES_A_BET.search(combined_text):
+            print(f"[+] Reconciled Bet #{b_idx + 1} '{desc}': {mult_num}x on {n_horses} selections, no bet type written: {n_horses} singles.")
+            bet['bet_type'] = 'single'
+            bet['cost_pence'] = calculate_bet_cost_pence(bet)
+        elif is_fc_or_tri or keeps_written_type:
             pass
         elif n_horses == 3:
             # On 3 selections:
@@ -2786,8 +2800,9 @@ SHOP SHORTHAND
 - Stakes: "50" or "50p" = 50 pence; "£1", "1-" or "1.00" = one pound; a hasty £ can look like a Q, E, Z or 2.
 - "ew", "e/w", "each way" = each-way; "w", "win" = win only.
 - "doub"/"dbl" = double, "treb" = treble, "acc"/"acca" = accumulator, "x doubles" = cross doubles (every double
-  between runners in different races), "s/f/cast", "sfc", "sf/c" = straight forecast, "r/f/cast", "rfc" = reversed
-  forecast, "cfc" = combination forecast, "f/c doubles" = forecast double. Full covers: trixie, patent, yankee,
+  between runners in different races), "s/f/cast", "sfc", "sf/c", "s/f" = straight forecast, "r/f/cast", "r/f cast", "rfc", "r/f", "rf" = reversed
+  forecast ("50 r/f cast" is a reversed forecast on the 2 above, not a double; a hasty "cast" looks like "last", but "last" always has a
+  number with it), "cfc", "c/fc", "c/f" = combination forecast, "f/c doubles" = forecast double. Full covers: trixie, patent, yankee,
   canadian, heinz, super heinz, goliath, lucky 15 / 31 / 63. A printed coupon heading names the bet type.
 
 WHAT TO RETURN
@@ -2849,6 +2864,65 @@ def card_for_prompt(runners: list[dict], full: bool = False, from_mins: int | No
     return "\n".join(out) or "(not available)"
 
 
+READ_KEPT_SECS = 86400  # a saved read this old is gone at the next start, whatever became of its wager
+SAVE_READS = os.environ.get("BETTY_HEADLESS") != "1"  # the free tests' made-up wagers aren't kept
+
+
+def _read_file(number: str | None) -> str | None:
+    return os.path.join(app_paths.log_dir(), "saved_reads", f"{number}.json") if number and SAVE_READS else None
+
+
+def save_read(number: str | None, reading: dict):
+    """A paid read of a wager's slip, kept until the wager is done with (user, 6 Nov): stopped or paused part-way, it's used again
+    on the way back, with no new call. A slip doesn't change, and its wager number is its own."""
+    path = _read_file(number)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"wager": number, "saved": time.time(), "reading": reading}, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+    except OSError as e:
+        print(f"[-] Could not save the read of wager {number}: {e}")
+
+
+def load_saved_read(number: str | None) -> dict | None:
+    """The read saved for this wager, or None. One that's too old, or won't read, isn't used."""
+    path = _read_file(number)
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        fresh = data.get("wager") == number and time.time() - float(data.get("saved", 0)) < READ_KEPT_SECS
+        return data.get("reading") if fresh else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def forget_read(number: str | None):
+    """The wager is done with, placed or left for staff: its read goes."""
+    path = _read_file(number)
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def prune_saved_reads():
+    """At start-up: reads left behind, as when a wager was dealt with on another till."""
+    if not SAVE_READS:
+        return
+    for path in glob.glob(os.path.join(app_paths.log_dir(), "saved_reads", "*.json*")):
+        try:
+            if time.time() - os.path.getmtime(path) > READ_KEPT_SECS:
+                os.remove(path)
+        except OSError:
+            pass
+
+
 def state_read_slip_via_api(api_key, retry_hint=None, payment_pence=None, struck_time=None):
     """STATE 1: Captures slip with in-memory enhancement, grounds handwriting against live racecards, and reconciles total stake.
     struck_time: when the bet was struck ('13:05'), if known. The card then starts CARD_FROM_BEFORE_STRUCK_MINS before
@@ -2861,6 +2935,12 @@ def state_read_slip_via_api(api_key, retry_hint=None, payment_pence=None, struck
     enhanced_img.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
     
+    if not retry_hint:  # a rescan is asked for because the last read didn't add up: only then a new one
+        saved = load_saved_read(_current_wager)
+        if saved:
+            print(f"[*] Slip scan: using the read saved for wager {_current_wager}, no new call (it was paused or stopped).")
+            return process_slip_reading(saved, img_str, payment_pence)
+
     struck_mins = parse_clock_minutes(struck_time)
     from_mins = None if struck_mins is None else max(0, struck_mins - CARD_FROM_BEFORE_STRUCK_MINS) // 60 * 60
     card_txt = card_for_prompt(racecard_manager.get_runners() + greyhound_card.get_runners(),
@@ -2932,6 +3012,7 @@ def state_read_slip_via_api(api_key, retry_hint=None, payment_pence=None, struck
     bets_data = read_vision_json(payload, "Slip scan", timeout=SCAN_TIMEOUT_SECS, remember_tier=True)
     if bets_data is None:
         return None, None, None, None, None
+    save_read(_current_wager, bets_data)
     return process_slip_reading(bets_data, img_str, payment_pence)
 
 
@@ -3451,6 +3532,47 @@ def race_list_pick_already_taken(resolved: dict, picks: set, borrowed: set = fro
     return None
 
 
+def bet_type_second_read(bet: dict, img_str: str) -> dict | None:
+    """What kind of bet one line is, read again on its own and not told the first reading's reason. {'bet_type', 'confidence'}."""
+    line = f"on line {bet['line_num']} of the writing (counting from the top), " if bet.get('line_num') else ""
+    return _ask_vision_json(
+        f"""You are checking one bet line on a handwritten betting slip. Find the bet line {line}first read as
+"{bet.get('description')}". Read only what kind of bet it says, letter by letter from the ink. "r/f", "rf", "r/fc", "r/f/cast", "r/f cast", "rfc" is
+a reversed forecast. "s/f", "sf", "s/fc", "s/f/cast", "s/f cast", "sfc" is a straight forecast. A hasty "cast" looks like "last". "c/f", "c/fc", "cfc" is a combination forecast. "dbl",
+"doub", "double" is a double. Don't work it out from the runners, the money or other lines.
+Answer "high" confidence only if the letters are clear.
+Return JSON: {{"letters": "...", "bet_type": "double", "reversed forecast", "straight forecast", "combination forecast" or "other", "confidence": "high" or "low"}}""",
+        img_str, "reader-chain",
+        {"type": "OBJECT", "properties": {"letters": {"type": "STRING"}, "bet_type": {"type": "STRING"}, "confidence": {"type": "STRING"}},
+         "required": ["letters", "bet_type", "confidence"], "propertyOrdering": ["letters", "bet_type", "confidence"]},
+        f"Second read of the bet type on '{bet.get('description')}'")
+
+
+def check_same_race_doubles(slip: list[dict], img_str: str | None):
+    """
+    A double on exactly two runners in one race can't be a double as written: it's a forecast misread, or the customer's mistake, which
+    the house rule splits (9.2468368, 6 Nov: '50 r/f cast' read '50 dbl last', split into two each way singles and placed wrong). Its
+    line is read again on its own. A forecast: the bet is that. Surely a double: the house rule stands. Anything else: staff.
+    """
+    if not img_str:
+        return
+    for bet in slip:
+        horses = bet.get('horses', [])
+        if (normalize_bet_type(str(bet.get('bet_type', ''))) != 'double' or len(horses) != 2
+                or (horses[0].get('meeting'), horses[0].get('time')) != (horses[1].get('meeting'), horses[1].get('time'))):
+            continue
+        answer = bet_type_second_read(bet, img_str) or {}
+        kind = str(answer.get('bet_type') or '').lower()
+        sure = str(answer.get('confidence') or '').lower() == 'high'
+        if sure and kind in ('reversed forecast', 'straight forecast'):
+            print(f"[+] '{bet.get('description')}': two runners in one race, and a second read says {kind} ('{answer.get('letters')}').")
+            bet.update(bet_type=kind, each_way=False, description=f"{bet.get('stake_pence')}p {kind}")
+            bet['cost_pence'] = calculate_bet_cost_pence(bet)
+        elif not (sure and kind == 'double'):
+            raise WagerForStaff(f"'{bet.get('description')}' reads as a double on two runners in one race, and a second read "
+                                f"couldn't say what it is ('{answer.get('letters', '')}')")
+
+
 def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, api_key=None, written_total_pence=None,
                                   struck_time=None):
     """
@@ -3834,6 +3956,9 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
 
     # 3a. A selection whose time fits several races equally (Rule 1.8.4): the bet is split equally over them
     slip_data = split_bets_over_time_clashes(slip_data)
+
+    # 3a2. A double can't be on two runners in one race, so the line may be a forecast misread (9.2468368)
+    check_same_race_doubles(slip_data, img_str)
 
     # 3b. Apply Configured Bookmaker House Rules & Discrepancy Resolution Engine
     # Costs are re-measured now that every runner has a resolved meeting + time (same-race aware).
@@ -8239,6 +8364,7 @@ def watcher_process_wager(row: int, number: str):
         STATUS_HUD.set_outcome(f"{summary} PLACED {time.strftime('%H:%M')}")
         _lessons_outcome(placed=True)
     _wagers_left_for_staff.add(number)
+    forget_read(number)
     _current_wager = None
 
 
@@ -8314,6 +8440,7 @@ def journal_staff(kind: str, **data):
 
 def prune_staff_records():
     """At start-up: journal lines older than STAFF_JOURNAL_DAYS, and slip images beyond the newest SLIP_IMAGES_KEPT."""
+    prune_saved_reads()
     log_dir = app_paths.log_dir()
     path = os.path.join(log_dir, STAFF_JOURNAL)
     cutoff = time.strftime('%Y-%m-%d', time.localtime(time.time() - STAFF_JOURNAL_DAYS * 86400))
@@ -8463,6 +8590,7 @@ def leave_wager_for_staff(number: str, reason: str, screen: Any = None, earlier:
     if os.environ.get("BETTY_HEADLESS") != "1":
         print(f"[*] Other programs' windows with the keyboard in the last {ForegroundLog.SECS} s: "
               f"{FOREGROUND_LOG.others()}")
+    forget_read(number)
     corpus_outcome(number, "staff", reason)
     shot = save_staff_screenshot(number, screen, earlier)
     _lessons_outcome(placed=False)

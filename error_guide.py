@@ -176,6 +176,10 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Betty asked about the payment",
      "Betty showed a payment question while selections were being entered. The program never answers these.",
      "Look at Betty's question and finish the wager by hand."),
+    (r"reads as a double on two runners in one race",
+     "A double on two runners in one race",
+     "A double can't be on two runners in the same race, so the line may be a forecast misread. A second read couldn't say which.",
+     "Check the slip and enter the wager by hand."),
     (r"combination forecast needs at least",
      "A combination forecast with too few selections",
      "A combination forecast has at least 3 selections, and fewer were read. One may have been missed: on 2 Betty would take it as a "

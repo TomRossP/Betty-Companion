@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.5] - 2026-11-06
+
+Offline tests only: none of this has run on a till yet.
+
+### Fixed
+- **'50 r/f cast' read as '50 dbl last'** (9.2468368, placed wrong, 6 Nov). The reader is told r/f, s/f and c/f, and that a hasty "cast" looks like
+  "last", which always has a number with it. It's a handwriting misread, so this may not always stop it: a double on exactly two runners in
+  one race can't be a double, so its line is now read again on its own: a forecast is entered as that, surely a double goes on to the
+  house rule as before, and anything else goes to staff. It used to be split into each way singles, with the money made up by 1.3.4's
+  each way correction.
+
+- **'6 x £1.50 E/W' on 6 selections is 6 singles** (9.2468424, user, 6 Nov). With no bet type written, 'N x' on N selections is now N singles. It was
+  taken for Perm 5-Folds at the same money, so the money couldn't catch it. It only stopped because Betty's bet list kept Singles chosen. A bet
+  type written still counts. '3 x' on 3 stays doubles (user, 6 Nov): a regular customer scrawls 'dbl' after it, which the reader can miss.
+
+### Added
+- **Gemini's read is kept until its wager is done with** (user, 6 Nov). Stopped or paused part-way, or the program closed, the wager goes on
+  with the saved read and no new paid call. It goes when the wager is placed or left for staff, and after a day regardless. A rescan
+  because the money doesn't add up is still a new read. In `logs\saved_reads`.
+- `scratch\known_slips`: slips with their truth, as staff read them, checked by `test_known_slips.py` (`--live` reads the picture with the paid
+  reader too). 9.2468368 is the first.
+
 ## [1.3.4] - 2026-11-06
 
 Offline tests only: none of this has run on a till yet.

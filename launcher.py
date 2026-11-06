@@ -1274,7 +1274,7 @@ class App:
         horse results, yesterday's each hour. Nothing on a cashier till: it has no tabs for them, and reads nothing for them."""
         self.price_book = None
         self.refresh_past_days()
-        if os.environ.get("BETTY_HEADLESS") == "1":  # the free tests: no records of made-up tills
+        if os.environ.get("BETTY_HEADLESS") == "1" or os.environ.get("BETTY_BACKEND_CMD"):  # the free tests write no records
             return
         try:
             keep = int(app_paths.setting("SPORTS_KEEP_DAYS", till_records.SPORTS_KEEP_DAYS))
