@@ -43,6 +43,7 @@ WINDOW_TITLE = "Betty Companion"
 SHOP_SETTINGS = [  # (setting, label, default): shown in System, Settings; the defaults are the program's own
     ("WATCHER_POLL_SECS", "Seconds between looks at View Wagers", 5.0),
     ("STAFF_IDLE_RESUME_SECS", "Seconds before resuming after staff use the till", 60),
+    ("BETTY_TAKE_FRONT_SECS", "Seconds with nobody at the till before Betty is taken over", 300.0),
     ("HOME_RETRY_SECS", "Seconds between tries to get back to Home", 60.0),
     ("SCAN_TIMEOUT_SECS", "Slip reader time limit (seconds)", 90),
     ("RECHECK_TIMEOUT_SECS", "Selection check time limit (seconds)", 45),

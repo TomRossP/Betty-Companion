@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.2] - 2026-11-06
+
+Offline tests only: none of this has run on a till yet.
+
+### Fixed
+- **Keys and clicks go to Betty or nowhere** (user, 6 Nov; 12:24 that day, Esc went to whatever was on top). Every key and click now
+  checks Betty has the keyboard. If she hasn't, nothing is pressed and the watcher pauses as it does for staff, the wager in hand
+  to be tried again. A stray window gives way only if nobody has touched the till for 2 s.
+- **The watcher no longer takes the till from someone using it** (user, 6 Nov). It used to bring Betty forward every 5 s over whatever
+  was in front. Now it waits, and presses nothing, until nobody has touched the till for 5 minutes, or Start or ` is pressed.
+- **A screen staff left Betty on is left alone** on the same terms. It used to be backed out of 60 s after they stopped.
+- **Backing out stops when someone touches the till.** It used to carry on through the Esc presses already under way.
+- **Pictures for the relay, and the paid read of an unknown screen, are of Betty only.** Another program's window on top was saved
+  and sent up as an unknown screen.
+
+### Added
+- "Seconds with nobody at the till before Betty is taken over" in System, Shop settings (300).
+
 ## [1.3.1] - 2026-11-06
 
 Offline tests only: **none of this has run on a till** yet. On the cashier till this morning Betty stopped drawing for about 20 s

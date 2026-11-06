@@ -1,4 +1,4 @@
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -341,6 +341,7 @@ def click_betty_cell(x: int, y: int):
     Performs a snappy Win32 click with calibrated mouse dwell time so
     legacy Betty GDI interface controls register the click reliably without latency.
     """
+    _require_betty()
     pyautogui.moveTo(x, y)
     interruptible_sleep(0.02)
     pyautogui.mouseDown(x, y)
@@ -4294,6 +4295,11 @@ _watcher_stop_reason = ""  # why the current watcher action was stopped: "staff"
 # land between the loop's "is it on?" and its reset of the stop flags (9.2452711, 26 Oct: lost, the next wager started)
 _watcher_state_lock = threading.Lock()
 _wager_opened = False  # the current wager's bet edit was opened (End): only then does Esc or a failure leave it for staff
+BETTY_TAKE_FRONT_SECS = app_paths.setting("BETTY_TAKE_FRONT_SECS", 300.0)  # nobody at the till this long: Betty is brought
+#   forward and a screen staff left her on is backed out of. Sooner only by Start or `
+BETTY_REQUIRE_QUIET_SECS = 2.0  # no person's input this long: a stray window in front may be made to give way
+BETTY_REQUIRE_WAIT_SECS = 1.0   # how long Betty gets to have the keyboard before a key or click isn't sent
+_switched_on_by_hand = False    # Start or `: the person wants it working now, so it may take the screen, once
 _paused_for_staff = False  # the watcher went idle because staff used the till (not switched off with `)
 _last_staff_activity = 0.0  # last key, click or mouse movement by a person
 STAFF_IDLE_RESUME_SECS = app_paths.setting("STAFF_IDLE_RESUME_SECS", 60)  # paused for staff: switch back on after this long with no activity at all
@@ -4345,8 +4351,9 @@ def set_watcher(on: bool, why: str = "` pressed"):
     and touches nothing: a wager in hand is tried again on resume. On puts the status panel back in its corner and looks at
     Betty after a short settle.
     """
-    global _watcher_resume_at, _watcher_stop_reason, _paused_for_staff
+    global _watcher_resume_at, _watcher_stop_reason, _paused_for_staff, _switched_on_by_hand
     _paused_for_staff = False  # the switch decides: off stays off, on is on
+    _switched_on_by_hand = False
     if not on:
         with _watcher_state_lock:
             watcher_on.clear()
@@ -4361,6 +4368,7 @@ def set_watcher(on: bool, why: str = "` pressed"):
         return
     STATUS_HUD.snap_home(timeout=0)  # dragged away: back to its corner, clear of what the watcher reads
     _watcher_resume_at = time.time() + WATCHER_RESUME_SETTLE_SECS
+    _switched_on_by_hand = True
     watcher_on.set()
     print(f"[*] Watcher ON ({why}){' (TEST MODE)' if test_mode_on.is_set() else ''}. "
           f"Looking at Betty in {WATCHER_RESUME_SETTLE_SECS:.0f}s...")
@@ -4616,6 +4624,7 @@ def betty_press(key: str):
 
 
 def _send_key(key: str):
+    _require_betty()
     if key in EXTENDED_KEYS:
         vk, scan = EXTENDED_KEYS[key]
         ctypes.windll.user32.keybd_event(vk, scan, 0x1, 0)        # KEYEVENTF_EXTENDEDKEY
@@ -4764,7 +4773,10 @@ _unknown_read_at = 0.0  # when an unknown screen was last read with the paid rea
 
 
 def save_unknown_screen() -> str | None:
-    """A picture of a screen the program doesn't know, in logs/ and so on the relay (a staff_ name), so it can be named."""
+    """A picture of a screen the program doesn't know, in logs/ and so on the relay (a staff_ name), so it can be named.
+    Never of another program's window: that would go up to the relay."""
+    if _foreground_exe() != BETTY_EXE:
+        return None
     try:
         path = os.path.join(app_paths.log_dir(), f"staff_UNKNOWN_{time.strftime('%Y%m%d_%H%M%S')}.png")
         os.makedirs(app_paths.log_dir(), exist_ok=True)
@@ -4790,13 +4802,14 @@ def click_way_out(img: Any, words: tuple[str, ...]) -> bool:
 
 def read_unknown_screen() -> bool:
     """
-    Esc did nothing on a screen the program doesn't know (user, 6 Nov: it should read the screen and decide). Betty is
-    given the keyboard, then any plainly safe button is clicked; failing that the screen is read by the slip reader, at
+    Esc did nothing on a screen the program doesn't know (user, 6 Nov: it should read the screen and decide), with Betty
+    in front. Any plainly safe button is clicked; failing that the screen is read by the slip reader, at
     most once per UNKNOWN_READ_SECS, for what it is and its way out, and only a safe button it names is clicked. Nothing
     that could place, confirm or close anything is ever pressed. True when something was tried.
     """
     global _unknown_read_at
-    focus_betty()
+    if _foreground_exe() != BETTY_EXE:  # it isn't Betty's screen that's showing: nothing to read, nothing to click
+        return False
     img = pyautogui.screenshot()
     if click_way_out(img, SAFE_WAY_OUT):
         return True
@@ -4835,6 +4848,9 @@ def go_home(max_steps: int = 8) -> bool:
         unchanged = 0  # Esc presses in a row that left Betty on the same (recognised) screen
         unknown_steps, saved = 0, False
         for _ in range(max_steps):
+            if abort_event.is_set() and _watcher_stop_reason in ("staff", "off"):
+                print("[*] Backing out stopped: someone is using the till.")
+                raise WatcherStop()
             screen = detect_screen()
             if screen == SCREEN_UNKNOWN:  # often Betty mid-redraw: let it settle before pressing anything
                 screen = wait_for_screen(ALL_SCREENS - {SCREEN_UNKNOWN}, timeout=1.5)
@@ -5858,6 +5874,7 @@ def find_reuse_row(rows: list[dict], horse: dict, order: int | None = None, ente
 def betty_right_click(x: int, y: int):
     """A right-click on Betty, held like click_betty_cell's (Betty's controls miss a snap click)."""
     _check_stop()
+    _require_betty()
     pyautogui.moveTo(x, y)
     interruptible_sleep(0.02)
     pyautogui.mouseDown(x, y, button='right')
@@ -7683,26 +7700,82 @@ def focus_betty():
         print(f"[-] Could not give Betty the keyboard: {e}")
 
 
+_exe_by_window: dict[tuple, str] = {}  # (window, its process) -> program: asked before every key and click
+
+
+def _foreground_exe() -> str:
+    """The program that has the keyboard, '' when none or it can't be told. Betty's in the free tests."""
+    if os.environ.get("BETTY_HEADLESS") == "1":
+        return BETTY_EXE
+    try:
+        front = ctypes.windll.user32.GetForegroundWindow()
+        if not front:
+            return ""
+        key = (front, window_pid(front))
+        if key not in _exe_by_window:
+            if len(_exe_by_window) > 64:
+                _exe_by_window.clear()
+            _exe_by_window[key] = window_exe(front)
+        return _exe_by_window[key]
+    except Exception:
+        return ""
+
+
+def _front_is_launcher() -> bool:
+    try:
+        front = ctypes.windll.user32.GetForegroundWindow()
+        return bool(front) and window_pid(front) == os.getppid()
+    except Exception:
+        return False
+
+
+def _someone_at_till() -> bool:
+    """A key, click or mouse movement within BETTY_TAKE_FRONT_SECS: the till isn't the program's to take over."""
+    return time.time() - _last_staff_activity < BETTY_TAKE_FRONT_SECS
+
+
+def _require_betty():
+    """
+    Before every key and click (user, 6 Nov: Esc went to whatever was on top, 12:24 that day). With nobody at the till a
+    stray window gives way; Betty gets a moment, as there's no window in front while hers change. Otherwise nothing is
+    pressed and the watcher pauses as it does for staff, the wager in hand to be tried again.
+    """
+    global _watcher_stop_reason, _paused_for_staff
+    if _foreground_exe() == BETTY_EXE:
+        return
+    if time.time() - _last_staff_activity >= BETTY_REQUIRE_QUIET_SECS:
+        focus_betty()
+    t0 = time.time()
+    while time.time() - t0 < BETTY_REQUIRE_WAIT_SECS:
+        if _foreground_exe() == BETTY_EXE:
+            return
+        time.sleep(0.02)
+    with _watcher_state_lock:
+        watcher_on.clear()
+        _paused_for_staff = True
+        _watcher_stop_reason = "staff"
+        abort_event.set()
+    print(f"[*] Betty hasn't got the keyboard ({_foreground_exe() or 'nothing'} has): nothing pressed, watcher paused.")
+    raise WatcherStop()
+
+
 def betty_in_front() -> bool:
     """
-    Betty's program has the keyboard, so the watcher's keys reach Betty and nothing else. The till has one screen: when
-    the launcher window (this program's parent) is in front, it is asked to step aside (it minimises itself), and any
-    other window gives way to Betty through focus_betty. False when Betty still isn't in front, or isn't open: the
-    watcher then waits and presses nothing. Always True in the free tests.
+    Betty's program has the keyboard, so the watcher's keys reach Betty and nothing else. With someone at the till, or
+    just having used it, whatever they have in front stays in front, the launcher included (user, 6 Nov: this took Betty
+    back every 5 seconds). Otherwise, or just after the watcher was switched on by hand, the launcher steps aside and any
+    other window gives way through focus_betty. False: the watcher waits and presses nothing.
     """
-    if os.environ.get("BETTY_HEADLESS") == "1":
+    if _foreground_exe() == BETTY_EXE:
         return True
+    if _someone_at_till() and not _switched_on_by_hand:
+        return False
     try:
-        user32 = ctypes.windll.user32
-        front = user32.GetForegroundWindow()
-        if front and window_exe(front) == BETTY_EXE:
-            return True
-        if front and window_pid(front) == os.getppid():
+        if _front_is_launcher():
             backend_event("step_aside")
             time.sleep(0.6)  # the launcher minimises; Windows usually hands the keyboard to Betty behind it
         focus_betty()
-        front = user32.GetForegroundWindow()
-        return bool(front) and window_exe(front) == BETTY_EXE
+        return _foreground_exe() == BETTY_EXE
     except Exception as e:
         print(f"[-] Could not tell which window is in front: {e}")
         return False
@@ -8244,6 +8317,9 @@ def save_staff_screenshot(number: str, screen: Any = None, earlier: Any = None) 
     so a failure can be seen afterwards rather than guessed. `screen`: the one taken when it went wrong, when Betty
     has been backed out of since (else the screen now); `earlier`: the one from a failed first try, saved beside it as
     ..._first.png. Only the newest STAFF_SCREENSHOTS_KEPT are kept. Returns the file saved (None when it couldn't be)."""
+    if screen is None and _foreground_exe() != BETTY_EXE:
+        print("[*] No staff screen saved: Betty isn't in front, and another program's window would go up to the relay.")
+        return None
     try:
         log_dir = app_paths.log_dir()  # next to the exe when packaged
         os.makedirs(log_dir, exist_ok=True)
@@ -8366,6 +8442,7 @@ def leave_wager_for_staff(number: str, reason: str, screen: Any = None, earlier:
 
 
 _betty_hidden_reported = False  # "Betty isn't in front" printed once until she is again
+_left_screen_reported = False   # "left by staff" printed once until she's back on Home
 
 
 _queue_seen: dict[str, float] = {}  # wagers waiting now -> when the watcher first saw each
@@ -8388,7 +8465,7 @@ def report_queue(numbers: list[str]):
 
 def watcher_cycle():
     """One look: get to View Wagers, take the top wager not yet handled, or wait for the next poll."""
-    global _betty_hidden_reported, _home_lost_said
+    global _betty_hidden_reported, _home_lost_said, _switched_on_by_hand, _left_screen_reported
     if not betty_in_front():  # a key now would land in whatever window is in front (the launcher, say)
         if not _betty_hidden_reported:
             print("[*] Betty isn't in front (or isn't open): the watcher waits and presses nothing.")
@@ -8401,11 +8478,24 @@ def watcher_cycle():
         return
     _betty_hidden_reported = False
     screen = detect_screen()
+    if screen not in (SCREEN_HOME, SCREEN_VIEW_WAGERS) and _someone_at_till() and not _switched_on_by_hand:
+        # Back on by itself with someone just gone from the till: what they left showing stays until the till is quiet
+        if not _left_screen_reported:
+            print(f"[*] Betty is on {screen}, left by staff: nothing pressed until the till has been quiet "
+                  f"{BETTY_TAKE_FRONT_SECS:.0f}s (or press `).")
+            _left_screen_reported = True
+        refresh_watcher_hud(f"Betty is on {screen}: left alone until the till is quiet (or press `).")
+        t0 = time.time()
+        while time.time() - t0 < WATCHER_POLL_SECS:
+            _check_stop()
+            time.sleep(0.1)
+        return
+    _left_screen_reported = False
     if screen not in (SCREEN_HOME, SCREEN_VIEW_WAGERS):
         print(f"[*] Watcher found Betty on {screen}: backing out to Home first.")
         if not go_home():
             raise HomeUnreachable(f"could not get back to Home from {screen}")
-    _home_lost_said = False
+    _home_lost_said = _switched_on_by_hand = False
     open_view_wagers()
     queue = read_unedited_queue(pyautogui.screenshot())
     now = time.time()
