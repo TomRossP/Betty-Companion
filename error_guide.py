@@ -26,6 +26,12 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "been placed.",
      "Check the wager in Betty BEFORE doing anything else. Only enter it if it was not placed, or the customer is "
      "paid twice."),
+    (r"F12 was pressed on wager .* may be placed",
+     "Placed? Not confirmed",
+     "F12 (Place Bet) was pressed, but Betty stayed frozen on Choose Bet and Stake past the program's wait. Betty often "
+     "takes the F12 once she comes back (9.2468158, 6 Nov).",
+     "Check the wager in Betty BEFORE doing anything else. Only enter it if it was not placed, or the customer is "
+     "paid twice."),
     (r"questioned the payment after F12",
      "Betty asked about the payment",
      "After F12, Betty showed a question about the payment. The program never answers payment questions.",

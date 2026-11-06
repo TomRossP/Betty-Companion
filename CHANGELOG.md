@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.1] - 2026-11-06
+
+Offline tests only: **none of this has run on a till** yet. On the cashier till this morning Betty stopped drawing for about 20 s
+once a minute, while something filled the link to Betty's files with about 250 MB (still being traced). Three wagers with every
+selection matched went to staff, and F12 on a fourth was logged as left unedited though Betty placed it 15 s later.
+
+### Fixed
+- **Companion waits out a freeze** (9.2468149, 9.2468157, 9.2468160). Betty's clock, top right, ticks every second, so a clock
+  that has stopped is told from a key that wasn't taken. When a wait for a screen or a betslip line runs out and the clock has
+  stopped, it waits for her, up to 45 s (`BETTY_FREEZE_SECS`). A Betty that's alive on the wrong screen still stops it as before,
+  about 2 s later. Screens with no clock showing can't be told, and behave as before.
+- **Esc pressed in a freeze is not "Esc does nothing"**: it no longer counts towards giving up on backing out.
+- **After F12, a freeze longer than that is no longer called unedited** (9.2468158). Staff are told it may be placed, and to check
+  Betty before entering it.
+
 ## [1.3.0] - 2026-11-06
 
 Everything below has been through the offline tests and the real screens; **none of it has run on a till**. Sports are off until

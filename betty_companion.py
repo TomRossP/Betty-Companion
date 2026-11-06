@@ -1,4 +1,4 @@
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -4574,6 +4574,13 @@ HOME_RETRY_SECS = app_paths.setting("HOME_RETRY_SECS", 60.0)  # between tries to
 UNKNOWN_READ_SECS = 600.0  # at most one paid look at a screen the program doesn't know, this often
 SAFE_WAY_OUT = ("cancel", "close", "ok", "back", "continue", "no", "exit")  # the only buttons clicked on an unknown screen
 ESC_UNCHANGED_LIMIT = 2  # Esc presses in a row that leave Betty on the same screen before go_home gives up
+# Betty can stop drawing for 20 s at a time (cashier till, 6 Nov: once a minute, its link to Betty's files full; 9.2468149,
+# 9.2468157, 9.2468160 went to staff and F12 on 9.2468158 went through unseen). Her clock, top right, ticks every second:
+# within 1 s of the real time on 18 staff screens, 21 and 22 s behind on the two frozen ones
+BETTY_FREEZE_SECS = app_paths.setting("BETTY_FREEZE_SECS", 45.0)  # longest wait for a frozen Betty to come back
+BETTY_CLOCK_REGION = (1285, 34, 1362, 50)  # her red dot and clock; on most screens, and never on Home
+BETTY_CLOCK_DOT_W, BETTY_CLOCK_DOT_MIN = 15, 30  # the dot: in the region's first 15 px, at least 30 red pixels
+BETTY_CLOCK_TICK_SECS = 1.3  # longer than one tick
 
 
 class HomeUnreachable(Exception):
@@ -4634,13 +4641,50 @@ def wait_for_screen(targets: set, timeout: float = NAV_TIMEOUT) -> str:
         time.sleep(0.02)
 
 
+def _betty_clock(img: Any) -> bytes | None:
+    """Betty's clock as pixels, None when it isn't showing."""
+    arr = np.array(img.convert('RGB').crop(BETTY_CLOCK_REGION))
+    dot = arr[:, :BETTY_CLOCK_DOT_W].astype(int)
+    red = ((dot[:, :, 0] > 180) & (dot[:, :, 1] < 80) & (dot[:, :, 2] < 80)).sum()
+    return arr.tobytes() if red >= BETTY_CLOCK_DOT_MIN else None
+
+
+def wait_out_freeze(doing: str = "") -> bool:
+    """
+    When Betty's clock has stopped, waits (up to BETTY_FREEZE_SECS) until it moves or goes. True when it had stopped:
+    whatever was being waited for can have another look. Without a clock on screen it can't tell: False. For use when
+    a wait has run out, as telling costs BETTY_CLOCK_TICK_SECS. Keys sent meanwhile aren't lost: Betty takes them after.
+    """
+    clock = _betty_clock(pyautogui.screenshot())
+    if clock is None:
+        return False
+    time.sleep(BETTY_CLOCK_TICK_SECS)
+    if _betty_clock(pyautogui.screenshot()) != clock:
+        return False
+    print(f"[*] Betty has frozen ({doing or 'waiting'}): her clock has stopped. Waiting for her, up to {BETTY_FREEZE_SECS:.0f} s.")
+    refresh_watcher_hud("Betty has frozen: waiting for her...")
+    t0 = time.time()
+    while time.time() - t0 < BETTY_FREEZE_SECS:
+        _check_stop()
+        if _betty_clock(pyautogui.screenshot()) != clock:
+            print(f"[*] Betty is back after {time.time() - t0 + BETTY_CLOCK_TICK_SECS:.0f} s.")
+            return True
+        time.sleep(0.25)
+    print(f"[-] Betty is still frozen after {BETTY_FREEZE_SECS:.0f} s.")
+    return True
+
+
 def expect_screen(targets: set, timeout: float = NAV_TIMEOUT, doing: str = "") -> str:
     """
-    Waits for one of `targets`. A screen the program can't recognise (UNKNOWN) no longer stops it (user's decision,
-    21 Oct): it carries on and the read-backs (betslip lines, bet lines, total vs Payment) check the result. A screen
-    it recognises as a DIFFERENT one still stops it: Betty really is somewhere else.
+    Waits for one of `targets`, and through a freeze of Betty's (wait_out_freeze). A screen the program can't recognise
+    (UNKNOWN) no longer stops it (user's decision, 21 Oct): it carries on and the read-backs (betslip lines, bet lines,
+    total vs Payment) check the result. A screen it recognises as a DIFFERENT one still stops it: Betty really is
+    somewhere else.
     """
     screen = wait_for_screen(targets, timeout)
+    if screen not in targets:
+        # A clock that moved while it was being told may have only just come back: a moment for her to draw, either way
+        screen = wait_for_screen(targets, max(timeout, NAV_TIMEOUT) if wait_out_freeze(doing) else 1.0)
     if screen in SCREENS_NOT_SURE:
         print(f"[!] {doing or 'waiting'}: screen not recognised (expected {'/'.join(sorted(targets))}); carrying on.")
         return screen
@@ -4825,6 +4869,8 @@ def go_home(max_steps: int = 8) -> bool:
                 betty_press('esc')
             after = wait_for_screen({s for s in ALL_SCREENS if s != screen}, timeout=2.0)
             stuck = after == screen and screen != SCREEN_UNKNOWN and screen not in MODAL_BACK_OUT
+            if stuck and wait_out_freeze(f"backing out from {screen}"):  # the Esc is still to come: not stuck yet
+                stuck = wait_for_screen({s for s in ALL_SCREENS if s != screen}, timeout=2.0) == screen
             unchanged = unchanged + 1 if stuck else 0
         home = detect_screen() == SCREEN_HOME
         _home_unreachable = not home
@@ -6489,7 +6535,11 @@ def _read_new_betslip_line(already_on_slip: int) -> list[dict]:
         arr = np.array(img.convert('RGB'))
         box_open = any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values())
         lines = [] if box_open else read_betslip_tail(img)
-        if betslip_count(lines, None if box_open else img) > already_on_slip or time.time() - t0 > NAV_TIMEOUT:
+        shown = betslip_count(lines, None if box_open else img) > already_on_slip
+        if not shown and time.time() - t0 > NAV_TIMEOUT and wait_out_freeze(f"betslip line {already_on_slip + 1}"):
+            t0 = time.time()
+            continue
+        if shown or time.time() - t0 > NAV_TIMEOUT:
             _last_betslip_shot = img  # the screen the lines were read from, for corpus_save
             return lines
         if box_open:
@@ -6713,6 +6763,7 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
                 # top, unread while Betty drew it; 'right' then swallowed the runner number and Enter). Nor is an unread
                 # top taken as the only meeting on the card at the time: the card can be short of a feed (9.2459253,
                 # 31 Oct: taken as Ascot 2:33 with the Eastgreen 2:33 virtual dogs off the card)
+                wait_out_freeze(f"runner list for {hhmm}")
                 top = _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds, reread_secs=NAV_TIMEOUT,
                                        want_virtual=want_virtual)
                 if top is None:
@@ -7753,8 +7804,12 @@ def commit_wager(number: str, payment_pence: int) -> str:
         betty_press('f12')
     finally:
         _placing = False
-    screen = expect_screen({SCREEN_VIEW_WAGERS, SCREEN_HOME, MODAL_PAYMENT_MISMATCH, MODAL_CONFIRM_STAKE},
-                           timeout=8.0, doing="Place Bet (F12)")
+    try:
+        screen = expect_screen({SCREEN_VIEW_WAGERS, SCREEN_HOME, MODAL_PAYMENT_MISMATCH, MODAL_CONFIRM_STAKE},
+                               timeout=8.0, doing="Place Bet (F12)")
+    except NavError as e:  # F12 has gone: never entered again, nor called unplaced (9.2468158, 6 Nov: placed 15 s later)
+        raise WagerForStaff(f"F12 was pressed on wager {number} but Betty didn't move on: it may be placed, "
+                            "please check it on Betty before entering it") from e
     if screen in (MODAL_PAYMENT_MISMATCH, MODAL_CONFIRM_STAKE):
         raise WagerForStaff("Betty questioned the payment after F12 (nothing answered)")
     if screen == SCREEN_HOME:
