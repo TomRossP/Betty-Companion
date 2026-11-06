@@ -1451,7 +1451,7 @@ class App:
             self.info["outcome"].configure(text=ev.get("text", ""))
         elif kind == "queue":
             self.info["queue"].configure(text=ev.get("text", ""))
-        elif kind in ("staff", "manual"):
+        elif kind in ("staff", "manual", "pick"):
             self.root.after(300, self.reload_records)
         elif kind in ("error", "fatal"):
             self._add_error(ev.get("text", ""))
@@ -1909,6 +1909,10 @@ class App:
                 kind = "Typed by staff"
                 summary = (f"#{e.get('selection')}: read '{(e.get('read') or {}).get('name', '')}', "
                            f"entered {m.get('name', '')} ({m.get('time', '')} {m.get('meeting', '')})")
+            elif e.get("kind") == "pick":  # a runner chosen for a name that wouldn't read: for checking by eye
+                kind = "Name picked"
+                summary = (f"'{e.get('written', '')}' at {e.get('price') or 'no price'} made {e.get('chosen', '')} "
+                           f"({e.get('race', '')}, Betty's price {e.get('betty_price') or 'none'}), by the {e.get('how', '')}")
             else:
                 kind = "Left for staff"
                 summary = e.get("reason", "")
