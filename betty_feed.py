@@ -38,6 +38,11 @@ RACE_STRIDE = 730
 RACE_EVENT_ID_OFF = 62  # Betty's event id: the off slips in transact.DBF and results.dbf name the race by it
 RUNNER_STRIDE = 97
 RUNNER_NAME_OFF = 12
+RUNNER_OUT_OFF = 66  # not 0 = a non-runner, set before the off (433 of 433 settled non-runners and none of 4,484 others, 16 Oct - 6 Nov)
+RACE_FLAGS_OFF = 60
+RACE_HANDICAP_BIT = 0x80  # 3,132 of 3,132 races against SETTDATA's HCAPEVENT
+RACE_TERMS_OFF = 75  # 0x81 = the usual terms; else places, then the fraction's top at +1 and bottom at +3 (extra places, on the card before the off)
+RACE_DEFAULT_TERMS = 0x81
 
 # Horse racing is every feed Betty labels HORSE or AHorses (SIS, TRP, Australian, Tote, BTC virtual...). Read in
 # priority order: SIS and TRP carry the meeting names Betty displays, the Tote feed fills any race they lack, then any
@@ -183,7 +188,7 @@ def decode_feed(data: bytes) -> list[dict]:
             secs = struct.unpack_from("<I", data, rb + 46)[0] - midnight
             if not 0 <= secs < 86400:
                 continue
-            names, prices = [], []
+            names, prices, out = [], [], []
             for p in range(rb + 80, rb + RACE_STRIDE - 3, 4):
                 idx = struct.unpack_from("<i", data, p)[0]
                 if idx < 0:
@@ -191,13 +196,18 @@ def decode_feed(data: bytes) -> list[dict]:
                 base = runner_base + idx * RUNNER_STRIDE
                 off = base + RUNNER_NAME_OFF
                 names.append(_cstr(data[off: off + RUNNER_STRIDE - RUNNER_NAME_OFF]) if off < len(data) else "")
-                top, bottom = struct.unpack_from("<HH", data, base + RUNNER_PRICE_OFF) if base + RUNNER_STRIDE <= len(data) else (0, 0)
+                whole = base + RUNNER_STRIDE <= len(data)
+                top, bottom = struct.unpack_from("<HH", data, base + RUNNER_PRICE_OFF) if whole else (0, 0)
                 prices.append(f"{top}-{bottom}" if bottom else "")  # Betty's price now; '' = none
+                out.append(bool(whole and data[base + RUNNER_OUT_OFF]))
             if names:
+                places, term_top, term_bottom = data[rb + RACE_TERMS_OFF], data[rb + RACE_TERMS_OFF + 1], data[rb + RACE_TERMS_OFF + 3]
                 races.append({
                     "meeting": meeting, "country": country,
                     "time_str": f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}", "minutes": secs // 60,
                     "runners": names, "prices": prices, "event_id": struct.unpack_from("<I", data, rb + RACE_EVENT_ID_OFF)[0],
+                    "out": out, "handicap": bool(data[rb + RACE_FLAGS_OFF] & RACE_HANDICAP_BIT),
+                    "extra_terms": (places, term_top, term_bottom) if places != RACE_DEFAULT_TERMS and term_top and term_bottom else None,
                 })
     return races
 
@@ -313,7 +323,8 @@ class BettyFeedCard:
                             "country": race["country"], "event_id": race["event_id"],
                             "feed": os.path.basename(path)[3:-4],  # e.g. 'HGB00': which Betty folder the race is in
                             "dogs": self.greyhounds,  # a dog race, virtual dogs too (category 'virtual')
-                            "price": race["prices"][cloth - 1],
+                            "price": race["prices"][cloth - 1], "out": race["out"][cloth - 1],
+                            "handicap": race["handicap"], "extra_terms": race["extra_terms"],
                         })
         self._signature, self._runners = signature, runners
         self._meetings = tuple(sorted({r["meeting"] for r in runners if r["category"] != "virtual"}))
@@ -548,6 +559,12 @@ def decode_placings(rp1: str) -> list[dict]:
     return placed
 
 
+def decode_non_runners(memo: str) -> list[str]:
+    """The non-runners' names from SETTDATA's NONRUNNERS memo: '2|Stride On|5|Geezer Rockstar|0|0|0|0|'."""
+    parts = memo.split("|")
+    return [name.strip() for name in parts[1::2] if name.strip() and name.strip() != "0"]
+
+
 class SettledTable:
     """
     All of SETTDATA, for looking back: Betty keeps about three weeks of it. A race is found by its event id, or by its meeting and
@@ -588,28 +605,50 @@ class SettledTable:
         at, size = self.fields[name]
         return rec[at: at + size].decode("latin-1").strip()
 
-    def _placings(self, row: dict) -> list[dict]:
-        at, size = self.fields["RP1"]
+    def _memo(self, row: dict, field: str) -> str:
+        at, size = self.fields[field]
         raw = row["rec"][at: at + size]
         first = struct.unpack("<I", raw)[0] if size == 4 else int(raw.strip() or 0)
         if not first:
-            return []
+            return ""
         with open(os.path.splitext(self.path)[0] + ".fpt", "rb") as memos:
             memos.seek(first * self.block)
             length = struct.unpack(">I", memos.read(8)[4:])[0]
-            return decode_placings(memos.read(min(length, 65536)).decode("latin-1"))
+            return memos.read(min(length, 65536)).decode("latin-1")
+
+    def _placings(self, row: dict) -> list[dict]:
+        return decode_placings(self._memo(row, "RP1"))
+
+    def _race_rows(self, event_id: int, meeting: str, time_str: str, day: datetime.date) -> list[dict]:
+        """The rows that can be this race: by its id, then by its meeting and time in the days after it."""
+        last = (day + datetime.timedelta(days=self.FOLLOWING_DAYS)).strftime("%Y%m%d")
+        rows = [self.by_id[event_id]] if event_id in self.by_id else []
+        return rows + sorted((r for r in self.by_race.get((meeting.lower(), time_str), ()) if f"{day:%Y%m%d}" <= r["date"] <= last),
+                             key=lambda r: r["date"])
 
     def placings(self, event_id: int, meeting: str, time_str: str, day: datetime.date, names: list[str]) -> list[dict]:
         """A race's placings, [] if Betty holds none. Whichever way it's found, every placed runner must be in the race."""
-        last = (day + datetime.timedelta(days=self.FOLLOWING_DAYS)).strftime("%Y%m%d")
-        rows = [self.by_id[event_id]] if event_id in self.by_id else []
-        rows += sorted((r for r in self.by_race.get((meeting.lower(), time_str), ()) if f"{day:%Y%m%d}" <= r["date"] <= last),
-                       key=lambda r: r["date"])
-        for row in rows:
+        for row in self._race_rows(event_id, meeting, time_str, day):
             placed = self._placings(row)
             if placed and all(any(_same_name(p["name"], n) for n in names) for p in placed):
                 return placed
         return []
+
+    def non_runners(self, event_id: int, meeting: str, time_str: str, day: datetime.date, names: list[str]) -> list[str]:
+        """A settled race's non-runners, [] if none. Whichever way it's found, each must be in the race."""
+        for row in self._race_rows(event_id, meeting, time_str, day):
+            gone = decode_non_runners(self._memo(row, "NONRUNNERS"))
+            if gone and all(any(_same_name(g, n) for n in names) for g in gone):
+                return gone
+        return []
+
+    def settled_terms(self, event_id: int) -> tuple[int, int, int] | None:
+        """The (places, top, bottom) of the fraction a race was settled on, None if it isn't here."""
+        row = self.by_id.get(event_id)
+        if not row:
+            return None
+        terms = tuple(self._get(row["rec"], name) for name in ("PSRNUMPLCS", "PSRFRCNUM", "PSRFRCDEN"))
+        return tuple(int(t) for t in terms) if all(t.isdigit() and int(t) for t in terms) else None
 
 
 class BettyResults:

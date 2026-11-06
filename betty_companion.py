@@ -1,4 +1,4 @@
-__version__ = "1.3.5"
+__version__ = "1.3.6"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -1947,8 +1947,14 @@ def reconcile_bet_scoping_qualifiers(
                 bet['bet_type'] = 'accumulator'
                 bet['cost_pence'] = calculate_bet_cost_pence(bet)
 
+        # A printed count of twice the bet's bets is each way, whatever the box says (printed_count_is_each_way)
+        if printed_count_is_each_way(f"{desc} {lines_map.get(b_line, '') if b_line is not None else ''}", bet):
+            if not bet.get('each_way'):
+                print(f"[+] Printed count: Bet #{b_idx + 1} '{desc}' is each way, the box's count being twice the bet's bets.")
+            bet['each_way'] = True
+            bet['cost_pence'] = calculate_bet_cost_pence(bet)
         # EW Conflict Resolution with Line Transcription:
-        if bet.get('each_way'):
+        elif bet.get('each_way'):
             matching_text = ''
             if b_line is not None:
                 matching_text = lines_map.get(b_line, '') or lines_map.get(b_line - 1, '')
@@ -2804,6 +2810,11 @@ SHOP SHORTHAND
   forecast ("50 r/f cast" is a reversed forecast on the 2 above, not a double; a hasty "cast" looks like "last", but "last" always has a
   number with it), "cfc", "c/fc", "c/f" = combination forecast, "f/c doubles" = forecast double. Full covers: trixie, patent, yankee,
   canadian, heinz, super heinz, goliath, lucky 15 / 31 / 63. A printed coupon heading names the bet type.
+- The printed PATENT coupon has two stake boxes at its foot, "WIN 7 @" and "WIN 14 @". The second is a printing error for each way
+  (14 bets is 7 each way): a stake in it has each_way true. raw_text keeps the printed words and the count.
+- A regular customer writes a row of runner numbers ("3-4-1"), then the stake and "each way" run together as one fast scrawl with no
+  clear letters: a 5, a squiggle, then a tall stroke looping up towards the numbers. It is "50p each way": each way singles on
+  those numbers, never a combination forecast or tricast, whose letters are written separately.
 
 WHAT TO RETURN
 1. line_transcription: every line in order. raw_text exactly as written, keeping the customer's spelling. kind is
@@ -3532,6 +3543,22 @@ def race_list_pick_already_taken(resolved: dict, picks: set, borrowed: set = fro
     return None
 
 
+FULL_COVERS = ('trixie', 'patent', 'yankee', 'canadian', 'heinz', 'super heinz', 'goliath', 'lucky 15', 'lucky 31', 'lucky 63')
+PRINTED_COUNT = re.compile(r"\b(?:win|e\s*/?\s*w)\s*(\d{1,3})\b|\b(\d{1,3})\s*(?:@|bets?\b)", re.I)
+
+
+def printed_count_is_each_way(text: str, bet: dict) -> bool:
+    """
+    A full cover whose stake line carries a count of twice its bets is each way. The printed Patent coupon's two stake
+    boxes both say WIN, 'WIN 7 @' and 'WIN 14 @': the second is a printing error for each way, as 14 is 7 bets twice
+    (user, 9.2468555, 6 Nov: £5 in it, £70 paid, read as £35 to win).
+    """
+    if normalize_bet_type(str(bet.get('bet_type', ''))) not in FULL_COVERS:
+        return False
+    bets = calculate_bet_cost_pence(dict(bet, stake_pence=1, each_way=False))
+    return any(int(a or b) == 2 * bets for a, b in PRINTED_COUNT.findall(text))
+
+
 def bet_type_second_read(bet: dict, img_str: str) -> dict | None:
     """What kind of bet one line is, read again on its own and not told the first reading's reason. {'bet_type', 'confidence'}."""
     line = f"on line {bet['line_num']} of the writing (counting from the top), " if bet.get('line_num') else ""
@@ -3571,6 +3598,49 @@ def check_same_race_doubles(slip: list[dict], img_str: str | None):
         elif not (sure and kind == 'double'):
             raise WagerForStaff(f"'{bet.get('description')}' reads as a double on two runners in one race, and a second read "
                                 f"couldn't say what it is ('{answer.get('letters', '')}')")
+
+
+def combination_second_read(bet: dict, img_str: str) -> dict | None:
+    """A line read as a combination on 3 runners, read again on its own: is it one, or each way? {'bet', 'confidence'}."""
+    line = f"on line {bet['line_num']} of the writing (counting from the top), " if bet.get('line_num') else ""
+    return _ask_vision_json(
+        f"""You are checking one bet line on a handwritten betting slip. Find the bet line {line}first read as
+"{bet.get('description')}", under a row of runner numbers. It says one of two things. A combination forecast or tricast has its
+letters written separately: "c/f", "c/fc", "cfc", "comb", "c/t", "tricast". Or it is each way on each number: "e/w", "each way", or,
+from one regular customer, the stake and "each way" run together as one fast scrawl with no clear letters: a 5, a squiggle, then a
+tall stroke looping up towards the numbers. That scrawl is "50p each way", never a combination. Read it from the ink. Don't work it
+out from the runners, the money or other lines. Answer "high" confidence only if you are sure which of them it is.
+Return JSON: {{"letters": "...", "bet": "combination", "each way" or "other", "confidence": "high" or "low"}}""",
+        img_str, "reader-chain",
+        {"type": "OBJECT", "properties": {"letters": {"type": "STRING"}, "bet": {"type": "STRING"}, "confidence": {"type": "STRING"}},
+         "required": ["letters", "bet", "confidence"], "propertyOrdering": ["letters", "bet", "confidence"]},
+        f"Second read of the bet on '{bet.get('description')}'")
+
+
+def check_combination_lines(slip: list[dict], img_str: str | None):
+    """
+    A combination on 3 runners in one race costs the same as each way singles on them (6 stakes), so the money can't tell them
+    apart. A regular customer's '50p each way' scrawl was read as a combination forecast or tricast (9.2468502, 9.2468536, 9.2468543,
+    6 Nov: staff entered each as 3 each way singles). The line is read again on its own. Each way: singles. Surely a
+    combination: it stands. Anything else: staff.
+    """
+    if not img_str:
+        return
+    for bet in slip:
+        horses = bet.get('horses', [])
+        if (normalize_bet_type(str(bet.get('bet_type', ''))) not in ('combination forecast', 'combination tricast') or len(horses) != 3
+                or len({(h.get('meeting'), h.get('time')) for h in horses}) != 1):
+            continue
+        answer = combination_second_read(bet, img_str) or {}
+        kind = str(answer.get('bet') or '').lower()
+        sure = str(answer.get('confidence') or '').lower() == 'high'
+        if sure and kind == 'each way':
+            print(f"[+] '{bet.get('description')}': a second read says each way on each number ('{answer.get('letters')}').")
+            bet.update(bet_type='single', each_way=True, description=f"{bet.get('stake_pence')}p each way")
+            bet['cost_pence'] = calculate_bet_cost_pence(bet)
+        elif not (sure and kind == 'combination'):
+            raise WagerForStaff(f"'{bet.get('description')}' reads as a combination on 3 runners, which costs the same as each way "
+                                f"singles, and a second read couldn't say which it is ('{answer.get('letters', '')}')")
 
 
 def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, api_key=None, written_total_pence=None,
@@ -3959,6 +4029,8 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
 
     # 3a2. A double can't be on two runners in one race, so the line may be a forecast misread (9.2468368)
     check_same_race_doubles(slip_data, img_str)
+    # A combination on 3 runners costs what each way singles on them do: the money can't tell (9.2468536)
+    check_combination_lines(slip_data, img_str)
 
     # 3b. Apply Configured Bookmaker House Rules & Discrepancy Resolution Engine
     # Costs are re-measured now that every runner has a resolved meeting + time (same-race aware).
@@ -4736,6 +4808,8 @@ ESC_UNCHANGED_LIMIT = 2  # Esc presses in a row that leave Betty on the same scr
 # 9.2468157, 9.2468160 went to staff and F12 on 9.2468158 went through unseen). Her clock, top right, ticks every second:
 # within 1 s of the real time on 18 staff screens, 21 and 22 s behind on the two frozen ones
 BETTY_FREEZE_SECS = app_paths.setting("BETTY_FREEZE_SECS", 45.0)  # longest wait for a frozen Betty to come back
+BETTY_NO_CLOCK_WAIT_SECS = app_paths.setting("BETTY_NO_CLOCK_WAIT_SECS", 25.0)  # no clock showing: how long nothing moves before it's no freeze
+BETTY_NO_CLOCK_QUIET_SECS = 30.0  # after such a wait found no freeze: not waited again for this long
 BETTY_CLOCK_REGION = (1285, 34, 1362, 50)  # her red dot and clock; on most screens, and never on Home
 BETTY_CLOCK_DOT_W, BETTY_CLOCK_DOT_MIN = 15, 30  # the dot: in the region's first 15 px, at least 30 red pixels
 BETTY_CLOCK_TICK_SECS = 1.3  # longer than one tick
@@ -4808,15 +4882,53 @@ def _betty_clock(img: Any) -> bytes | None:
     return arr.tobytes() if red >= BETTY_CLOCK_DOT_MIN else None
 
 
+def _betty_picture(img: Any) -> bytes:
+    """The screen, as pixels, without the corner where the status panel sits (it changes on its own)."""
+    rgb = img.convert('RGB')
+    return rgb.crop((0, 0, 1366, 625)).tobytes() + rgb.crop((0, 625, 1025, 768)).tobytes()
+
+
+_no_clock_quiet_until = 0.0
+
+
+def _wait_out_freeze_no_clock(shot: Any, doing: str) -> bool:
+    """
+    No clock on screen: Betty froze mid-draw, or she's alive on a screen without one, which can't be told yet. So when nothing
+    moves for BETTY_NO_CLOCK_WAIT_SECS it was no freeze: False, and not waited for again for a while. True as soon as anything
+    moves (9.2468289, 9.2468533, 6 Nov: both went to staff a moment before she came back).
+    """
+    global _no_clock_quiet_until
+    if time.time() < _no_clock_quiet_until:
+        return False
+    still = _betty_picture(shot)
+    t0, said = time.time(), False
+    while time.time() - t0 < BETTY_NO_CLOCK_WAIT_SECS:
+        _check_stop()
+        time.sleep(0.25)
+        if _betty_picture(pyautogui.screenshot()) != still:
+            if said:
+                print(f"[*] Betty moved after {time.time() - t0:.0f} s.")
+            return True
+        if not said and time.time() - t0 >= BETTY_CLOCK_TICK_SECS:
+            said = True
+            print(f"[*] Nothing has moved ({doing or 'waiting'}) and no clock is showing: Betty may have frozen. Waiting up to "
+                  f"{BETTY_NO_CLOCK_WAIT_SECS:.0f} s.")
+            refresh_watcher_hud("Betty may have frozen: waiting for her...")
+    print(f"[*] Nothing moved in {BETTY_NO_CLOCK_WAIT_SECS:.0f} s: not a freeze.")
+    _no_clock_quiet_until = time.time() + BETTY_NO_CLOCK_QUIET_SECS
+    return False
+
+
 def wait_out_freeze(doing: str = "") -> bool:
     """
     When Betty's clock has stopped, waits (up to BETTY_FREEZE_SECS) until it moves or goes. True when it had stopped:
-    whatever was being waited for can have another look. Without a clock on screen it can't tell: False. For use when
-    a wait has run out, as telling costs BETTY_CLOCK_TICK_SECS. Keys sent meanwhile aren't lost: Betty takes them after.
+    whatever was being waited for can have another look. Without a clock on screen: _wait_out_freeze_no_clock. For use
+    when a wait has run out, as telling costs BETTY_CLOCK_TICK_SECS. Keys sent meanwhile aren't lost: Betty takes them after.
     """
-    clock = _betty_clock(pyautogui.screenshot())
+    shot = pyautogui.screenshot()
+    clock = _betty_clock(shot)
     if clock is None:
-        return False
+        return _wait_out_freeze_no_clock(shot, doing)
     time.sleep(BETTY_CLOCK_TICK_SECS)
     if _betty_clock(pyautogui.screenshot()) != clock:
         return False
@@ -5060,7 +5172,12 @@ def open_view_wagers() -> str:
 def load_wager(row: int, number: str) -> dict:
     """Click the wager at `row` of the unedited list and confirm Betty loaded it (its number in the blue box)."""
     STATUS_HUD.snap_home()  # dragged over the summary panel it hides Payment (9.2448382, 23 Oct)
-    current_q = read_unedited_queue(pyautogui.screenshot())
+    shown = pyautogui.screenshot()
+    current_q = read_unedited_queue(shown)
+    # What the blue box says now: seen again under the new number, Betty has drawn only the number so far, however many
+    # reads agree (9.2468538, 6 Nov: frozen mid-draw, two reads gave 9.2468536's 16:39:41 and £3.00 for its 16:41:34 and £10.00)
+    old = read_wager_details(shown)
+    old_details = (old['struck_clock'], old['payment_pence']) if old['number'] != number else None
     if number in current_q:
         row = current_q.index(number)
     elif current_q:  # the list was read and the wager has left it (staff took it): its old row is another wager
@@ -5079,7 +5196,7 @@ def load_wager(row: int, number: str) -> dict:
         # 9.2453984 (27 Oct) was read with the wager shown before it (12:49:13, £10.00 for 11:03:28, £6.20)
         read = (details['number'], details['struck_clock'], details['payment_pence'])
         if details['number'] == number and details['struck_time'] and details['payment_pence'] is not None:
-            if read == last_read:
+            if read == last_read and read[1:] != old_details:
                 corpus_save('wager_details', img, {'number': number},
                             {k: details[k] for k in ('number', 'struck_clock', 'payment_pence')})
                 return details
@@ -5089,6 +5206,12 @@ def load_wager(row: int, number: str) -> dict:
         last_read = read
     last = read_wager_details(pyautogui.screenshot())
     if last['number'] == number:
+        if (last['struck_clock'], last['payment_pence']) == old_details and wait_out_freeze(f"wager {number} loading"):
+            # Otherwise Betty is alive and showing it: two wagers struck the same second for the same money
+            time.sleep(0.3)
+            last = read_wager_details(pyautogui.screenshot())
+            last_read = (last['number'], last['struck_clock'], last['payment_pence'])
+            last = read_wager_details(pyautogui.screenshot())
         if (last['number'], last['struck_clock'], last['payment_pence']) != last_read:
             # Not read the same twice in a row: the struck time and Payment may still be the wager shown before, so
             # they count as unread and the caller sends it to staff (review B4, 28 Oct: one read was taken here)
@@ -6400,15 +6523,34 @@ POPUP_WAIT_SECS = 0.4        # how long a box is looked for after a step that ca
 POPUP_WAIT_AFTER_ADD = 0.1   # after adding a selection: the betslip read that follows answers a box opening later
 
 
+LATE_HALF_DAY_MINS = 600  # a late-selection box this late is the race 12 hours ago at the same clock time (usually about 720)
+LATE_BOX_TEXT = (380, 340, 620, 80)
+
+
+def late_box_minutes(img: Any) -> int | None:
+    """The minutes in the late-selection box ("Wager staked 62 mins, 38 secs after 'off'"), None when they don't read."""
+    m = re.search(r"staked\s+([\d,]+)\s*min", _ocr_box(img, LATE_BOX_TEXT, '--psm 6'), re.I)
+    return int(m.group(1).replace(',', '')) if m else None
+
+
 def answer_entry_popups(max_rounds: int = 3, wait: float = POPUP_WAIT_SECS):
-    """After adding a runner: the price box -> answer_price_box; a late selection -> Yes (void processing). `wait`: how
-    long the first box is looked for."""
+    """After adding a runner: the price box -> answer_price_box; a late selection -> Yes (void processing), or No when it's
+    the race 12 hours ago (RaceHalfADayOld). `wait`: how long the first box is looked for."""
     for _ in range(max_rounds):
         screen = wait_for_screen(set(MODAL_SIGNATURES), timeout=wait)
         if screen == MODAL_PRICE:
             answer_price_box()
         elif screen == MODAL_LATE_SELECTION:
-            spot = find_button(pyautogui.screenshot(), "Yes", MODAL_BACK_OUT[MODAL_LATE_SELECTION][1])
+            shot = pyautogui.screenshot()
+            mins = late_box_minutes(shot)
+            if mins is not None and mins >= LATE_HALF_DAY_MINS:
+                spot = find_button(shot, "No", MODAL_BACK_OUT[MODAL_LATE_SELECTION][1])
+                if not spot:
+                    raise NavError("late-selection box: 'No' not found")
+                print(f"[*] Late selection, {mins} mins: the race 12 hours ago at this clock time. No.")
+                betty_click(*spot)
+                raise RaceHalfADayOld(f"only the race 12 hours earlier came up ({mins} mins late)")
+            spot = find_button(shot, "Yes", MODAL_BACK_OUT[MODAL_LATE_SELECTION][1])
             if not spot:
                 raise NavError("late-selection box: 'Yes' not found")
             print("[*] Late selection: Yes (void selection processing).")
@@ -6954,22 +7096,42 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
             screen = _next_runner_list(top, meeting, candidates, before)
         else:
             raise WagerForStaff(f"could not bring {meeting} to the top of Betty's runner list")
-    if row:  # a click adds it to the betslip (user, 27 Oct); typing its number would take a trap above it
-        # The price is taken by clicking the price, the name gives SP (user, 28 Oct)
-        col = RACE_LIST_PRICE_COL if takes_price else RACE_LIST_NAME_COL
-        betty_click(col[0] + col[1] // 2, row['y'])
-        print(f"[*] Added {label} by clicking its {'price' if takes_price else 'name'} "
-              f"(row {row['row'] + 1} of the runner list, under {top}).")
-    elif void:  # a card number not in the race: Betty's void selection for this race (user, 23 Oct; Rule 1.8.4)
-        betty_press('v')
-        print(f"[*] Added {label} with 'v'.")
-    else:
-        _type_text(str(int(number)))
-        betty_press('add' if takes_price else 'enter')
-        print(f"[*] Added {label} with {'numpad + (price)' if takes_price else 'Enter (SP)'}.")
-    answer_entry_popups(wait=POPUP_WAIT_AFTER_ADD)  # a box opening later is answered by the betslip read
-
-    lines = _read_new_betslip_line(already_on_slip)
+    lines = None
+    # The race 12 hours ago shares this clock time: No, 'right', then 'left' and 'right', which shuffles the duplicate meeting
+    # out and shows the second one, then staff (user, 6 Nov)
+    for keys in ((), ('right',), ('left', 'right')):
+        if keys:
+            wait_for_screen({SCREEN_RACE_LIST})  # the box closing
+            print(f"[*] {' then '.join(keys)} and {label} again: that was the race 12 hours ago.")
+            for key in keys:
+                before = runner_list_signature(pyautogui.screenshot())
+                betty_press(key)
+                screen = _next_runner_list(meeting, meeting, candidates, before)
+            if screen == SCREEN_RACE_ENTRY_EXHAUSTED or _runner_list_top(meeting, hhmm, candidates, want_dogs, both_kinds,
+                                                                         want_virtual=want_virtual) != meeting:
+                continue
+        try:
+            if row:  # a click adds it to the betslip (user, 27 Oct); typing its number would take a trap above it
+                # The price is taken by clicking the price, the name gives SP (user, 28 Oct)
+                col = RACE_LIST_PRICE_COL if takes_price else RACE_LIST_NAME_COL
+                betty_click(col[0] + col[1] // 2, row['y'])
+                print(f"[*] Added {label} by clicking its {'price' if takes_price else 'name'} "
+                      f"(row {row['row'] + 1} of the runner list, under {top}).")
+            elif void:  # a card number not in the race: Betty's void selection for this race (user, 23 Oct; Rule 1.8.4)
+                betty_press('v')
+                print(f"[*] Added {label} with 'v'.")
+            else:
+                _type_text(str(int(number)))
+                betty_press('add' if takes_price else 'enter')
+                print(f"[*] Added {label} with {'numpad + (price)' if takes_price else 'Enter (SP)'}.")
+            answer_entry_popups(wait=POPUP_WAIT_AFTER_ADD)  # a box opening later is answered by the betslip read
+            lines = _read_new_betslip_line(already_on_slip)
+            break
+        except RaceHalfADayOld:
+            if row or void:  # no list to walk: 'right' would take another race away
+                raise
+    if lines is None:
+        raise WagerForStaff(f"{label}: only the race 12 hours earlier came up, after 'right', then 'left' and 'right'")
     inputs = {'already_on_slip': already_on_slip, 'label': label, 'horse': horse}
     try:
         got = check_new_betslip_line(lines, already_on_slip, label)
@@ -8190,6 +8352,11 @@ class WagerForStaff(Exception):
     """This wager can't be done safely by the program: one sentence for staff, then it is left for a person."""
 
 
+class RaceHalfADayOld(WagerForStaff):
+    """Betty's late-selection box said about 720 minutes: typing 16:40 also brings up the 04:40 at a virtual meeting. No was
+    pressed; enter_selection tries the rest of the list (user, 6 Nov), and anywhere else it goes to staff."""
+
+
 def alert_staff(message: str):
     """HUD message with a sound: something needs a person."""
     try:
@@ -8604,7 +8771,13 @@ def leave_wager_for_staff(number: str, reason: str, screen: Any = None, earlier:
         alert_staff(f"Wager {number} needs staff: {reason}. (Test mode: left unedited.)")
         STATUS_HUD.set_outcome(f"{number} -> staff: {reason} {time.strftime('%H:%M')}")
         return
-    fao = mark_wager_fao(number)
+    try:
+        fao = mark_wager_fao(number)
+    except NavError as e:
+        print(f"[-] FAO: wager {number}: {e}")
+        fao = ''
+    if not fao:
+        _fao_owed[number] = FAO_RETRIES
     if fao == 'marked':
         alert_staff(f"Wager {number} sent to the manager (FAO): {reason}.")
     elif fao == 'already':
@@ -8612,6 +8785,31 @@ def leave_wager_for_staff(number: str, reason: str, screen: Any = None, earlier:
     else:
         alert_staff(f"Wager {number} needs staff: {reason}. Could NOT mark it FAO - please check Betty.")
     STATUS_HUD.set_outcome(f"{number} -> staff: {reason} {time.strftime('%H:%M')}")
+
+
+FAO_RETRIES = 3
+_fao_owed: dict[str, int] = {}  # wagers left for staff that couldn't be marked FAO -> tries left (9.2468533, 6 Nov: never marked)
+
+
+def retry_owed_fao(queue: list[str]) -> bool:
+    """Betty is on View Wagers again: marks FAO a wager that couldn't be when it was left for staff. True when one was tried,
+    as Betty has moved. A wager gone from the list has been taken by staff."""
+    for number in list(_fao_owed):
+        if number not in queue:
+            del _fao_owed[number]
+            continue
+        _fao_owed[number] -= 1
+        try:
+            fao = mark_wager_fao(number)
+        except NavError as e:
+            print(f"[-] FAO: wager {number}: {e}")
+            fao = ''
+        if fao or not _fao_owed[number]:
+            del _fao_owed[number]
+            alert_staff(f"Wager {number} needs staff: sent to the manager (FAO)." if fao else
+                        f"Wager {number} needs staff. Could NOT mark it FAO after {FAO_RETRIES} more tries - please check Betty.")
+        return True
+    return False
 
 
 _betty_hidden_reported = False  # "Betty isn't in front" printed once until she is again
@@ -8671,6 +8869,8 @@ def watcher_cycle():
     _home_lost_said = _switched_on_by_hand = False
     open_view_wagers()
     queue = read_unedited_queue(pyautogui.screenshot())
+    if retry_owed_fao(queue):
+        return
     now = time.time()
     todo = [(i, n) for i, n in enumerate(queue)
             if n not in _wagers_left_for_staff and _open_elsewhere_until.get(n, 0) <= now]

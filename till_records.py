@@ -2,10 +2,12 @@
 What's kept on the till from Betty's own files, for the Past results and Sports prices tabs, in Documents\\BettyCompanion Records:
 outside the program's folder, so that a new version, wherever it's unzipped, finds them.
 
-Past results: one compressed file a day, kept for good (past_results\\<yyyymmdd>.json.gz, about 50 KB): every UK, Irish, international and greyhound race, its
-runners and their placings. The runners come from that day's feed files, in Events or, once the day is over, Events\\ARCHIVE;
-the placings and SPs from SETTDATA (as far as Betty records them: some races list only the places paid). She keeps about three
-weeks of results, so what's written here is the only record after that. Virtual races are left out: about 10,000 runners a day.
+Past results: one compressed file a day, kept for good (past_results\\<yyyymmdd>.json.gz, about 125 KB): every UK, Irish, international and greyhound race, its
+runners, their placings, non-runners and every change of their prices. The runners come from that day's feed files, in Events or, once the day is over, Events\\ARCHIVE;
+the placings and SPs from SETTDATA (as far as Betty records them: some races list only the places paid), the prices from her
+monthly price history, the non-runners from both. Why a runner didn't finish isn't recorded anywhere (6 Nov), and a runner with no
+placing may have finished. She keeps about three weeks of results, so what's written here is the only record after that. Virtual
+races are left out: about 10,000 runners a day.
 
 Sports prices: every change of price of every sports selection, copied from Betty's monthly price history, with who won
 (sports_prices.db). Kept SPORTS_KEEP_DAYS after the event, so the file stops growing at about that much.
@@ -65,17 +67,17 @@ def _feed_dir(day: datetime.date) -> str:
     return archive if count(archive) > count(events) else events
 
 
-def _settled_table():
+def _settled_table(dbf_dir: str | None = None):
     try:
-        return betty_feed.SettledTable()
+        return betty_feed.SettledTable(dbf_dir)
     except (OSError, KeyError, ValueError, struct.error) as e:
         print(f"[-] Past results: Betty's results can't be read: {e}")
         return None
 
 
-def build_day(day: datetime.date, table=None) -> dict:
+def build_day(day: datetime.date, table=None, dbf_dir: str | None = None) -> dict:
     """The day's races: [{'group', 'meeting', 'time', 'settled', 'runners': [{'number', 'name', 'price', 'place', 'sp',
-    'dead_heat'}]}], each race finishing order first, then the rest by racecard number."""
+    'dead_heat', 'prices', 'nr', 'nr_at'}]}], each race finishing order first, then the rest by racecard number, then non-runners."""
     folder = _feed_dir(day)
     runners = betty_feed.BettyFeedCard(events_dir=folder, day=day).get_runners()
     dogs = betty_feed.BettyFeedCard(events_dir=folder, day=day, sports=betty_feed.DOG_SPORTS, greyhounds=True).get_runners()
@@ -100,7 +102,125 @@ def build_day(day: datetime.date, table=None) -> dict:
                     break
         race["runners"].sort(key=lambda x: (x["place"] is None, x["place"] or 0, x["number"] or 0))
     ordered = sorted(races.values(), key=lambda x: (x["group"], x["meeting"], x["time"]))
-    return {"date": f"{day:%Y-%m-%d}", "recorded": time.strftime("%Y-%m-%d %H:%M"), "races": ordered}
+    data = {"date": f"{day:%Y-%m-%d}", "recorded": time.strftime("%Y-%m-%d %H:%M"), "races": ordered}
+    add_prices(data, day, dbf_dir, settled)
+    return data
+
+
+def race_prices(day: datetime.date, event_ids: set[int], dbf_dir: str | None = None) -> tuple[dict, dict] | None:
+    """
+    Each race's price history, {event id: {runner: [[when, price], ...]}}, oldest first, only the changes, and its non-runners,
+    {(event id, runner): when}. From Betty's monthly price history (DBF\\PHST<mmyy>.DBF), on the day and the day before, when a race's
+    first prices can come (145 rows of 23,488 on 5 Nov). A runner's status 1 is a non-runner: on 3-5 Nov it was every runner in
+    SETTDATA's non-runners but two vacant traps, and nobody else. `when` is local, counted as if UTC, as in the sports record.
+    None when she has no file for the day's month.
+    """
+    folder = dbf_dir or betty_feed.dbf_folder()
+    first = day - datetime.timedelta(days=1)
+    if not os.path.exists(os.path.join(folder, f"PHST{day:%m%y}.DBF")):
+        return None
+    start, end = f"{first:%Y%m%d}".encode(), f"{day:%Y%m%d}".encode()
+    found: dict[int, dict[str, list]] = {}
+    non_runners: dict[tuple, int] = {}
+    last: dict[tuple, str] = {}
+    for name in dict.fromkeys((f"PHST{first:%m%y}.DBF", f"PHST{day:%m%y}.DBF")):
+        path = os.path.join(folder, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, "rb") as f:
+            n, header_len, rec_len = struct.unpack_from("<IHH", f.read(12), 4)
+            f.seek(32)
+            fields, pos = {}, 1
+            while (desc := f.read(32)) and desc[0] != 0x0D:
+                fields[desc[:11].split(b"\0")[0].decode("latin-1").upper()] = (pos, pos + desc[16])
+                pos += desc[16]
+            d0, d1 = fields["UPDDATE"]
+            low, high = 0, n  # her rows are in time order
+            while low < high:
+                mid = (low + high) // 2
+                f.seek(header_len + mid * rec_len)
+                if f.read(rec_len)[d0:d1] >= start:
+                    high = mid
+                else:
+                    low = mid + 1
+            f.seek(header_len + low * rec_len)
+            e0, e1 = fields["EVENTID"]
+            while blob := f.read(SportsPrices.CHUNK_ROWS * rec_len):
+                for i in range(len(blob) // rec_len):
+                    rec = blob[i * rec_len: (i + 1) * rec_len]
+                    if rec[d0:d1] > end:
+                        break
+                    raw_id = rec[e0:e1].strip()
+                    if not raw_id.isdigit() or int(raw_id) not in event_ids or rec[:1] == b"*":
+                        continue
+                    get = lambda key: rec[fields[key][0]:fields[key][1]].decode("latin-1").strip() if key in fields else ""  # noqa: E731, B023
+                    num, den, runner = get("ODDSNUM"), get("ODDSDEN"), get("SELNNAME")
+                    clock = lambda: calendar.timegm(time.strptime(f"{get('UPDDATE')} {get('UPDTIME')}", "%Y%m%d %H:%M:%S"))  # noqa: E731, B023
+                    if get("RUNNERSTAT") == "1":  # a non-runner: a 1/50 here isn't a price (Hiyaam Proud, 5 Nov)
+                        non_runners.setdefault((int(raw_id), runner), clock())
+                        continue
+                    if not num.isdigit() or not den.isdigit() or not int(num) or not 0 < int(den) < 10000:  # 1/10001 is no price, only a row being added
+                        continue
+                    non_runners.pop((int(raw_id), runner), None)  # priced again: back in the race
+                    price = price_text(int(num), int(den))
+                    if last.get((raw_id, runner)) != price:
+                        last[(raw_id, runner)] = price
+                        found.setdefault(int(raw_id), {}).setdefault(runner, []).append([clock(), price])
+                else:
+                    continue
+                break
+    return found, non_runners
+
+
+def add_prices(data: dict, day: datetime.date, dbf_dir: str | None = None, table=None) -> bool:
+    """
+    Puts each runner's price history on a day's races, and marks the non-runners, from her price history and, once a race is
+    settled, from SETTDATA (`table`). Betty cuts a name at 24 letters. A placed runner is never a non-runner. False when she has
+    no price history for the day.
+    """
+    got = race_prices(day, {r["event_id"] for r in data.get("races", []) if r.get("event_id")}, dbf_dir)
+    found, non_runners = got if got is not None else ({}, {})
+    for race in data.get("races", []):
+        event = race.get("event_id")
+        prices = {name.lower(): rows for name, rows in found.get(event, {}).items()}
+        gone = {name.lower(): at for (e, name), at in non_runners.items() if e == event}
+        settled = table.non_runners(event, race["meeting"], race["time"], day, [x["name"] for x in race["runners"]]) if table else []
+        for name in settled:
+            gone.setdefault(name.lower(), None)
+        for run in race["runners"]:
+            name = run["name"].lower()
+            rows = prices.get(name) or next((v for k, v in prices.items() if name.startswith(k)), None)
+            if rows:
+                run["prices"] = rows
+            at = next((k for k in gone if name == k or name.startswith(k)), None)
+            if at is not None and not run.get("place"):
+                run.update(nr=True, nr_at=gone[at])
+        race["runners"].sort(key=lambda x: (bool(x.get("nr")), x.get("place") is None, x.get("place") or 0, x.get("number") or 0))
+    if got is None:
+        return False
+    data["prices_read"] = True
+    return True
+
+
+def _keep_prices(data: dict, on_file: dict):
+    """Prices and non-runners on file stay when Betty's file for them has gone: what's on file is then the only record."""
+    old = {(r.get("event_id"), x["name"]): x for r in on_file.get("races", []) for x in r["runners"]}
+    for race in data["races"]:
+        for run in race["runners"]:
+            was = old.get((race.get("event_id"), run["name"]), {})
+            if not run.get("prices") and was.get("prices"):
+                run["prices"] = was["prices"]
+            if not run.get("nr") and was.get("nr") and not run.get("place"):
+                run.update(nr=True, nr_at=was.get("nr_at"))
+
+
+def _write_day(day: datetime.date, data: dict):
+    path = _day_file(day)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def record_day(day: datetime.date, table=None) -> int:
@@ -109,16 +229,12 @@ def record_day(day: datetime.date, table=None) -> int:
     only record. The number of races on file.
     """
     data = build_day(day, table)
-    path = _day_file(day)
     on_file = load_day(f"{day:%Y-%m-%d}")
     settled = lambda d: sum(1 for r in d.get("races", []) if r.get("settled"))  # noqa: E731
     if not data["races"] or settled(data) < settled(on_file):
         return len(on_file["races"])
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with gzip.open(tmp, "wt", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    _keep_prices(data, on_file)
+    _write_day(day, data)
     return len(data["races"])
 
 
@@ -130,7 +246,36 @@ def backfill(today: datetime.date | None = None) -> list[str]:
         day = today - datetime.timedelta(days=back)
         if not os.path.exists(_day_file(day)) and record_day(day, table):
             done.append(f"{day:%Y-%m-%d}")
+    fill_prices()
     return done
+
+
+def fill_prices(dbf_dir: str | None = None, pause: float = 0.1) -> int:
+    """Price histories and non-runners for the days on file from before they were kept. Each day once, as far as Betty's files go.
+    How many."""
+    filled, table = 0, None
+    for date in days_on_file():
+        data = load_day(date)
+        if data.get("prices_read"):
+            continue
+        table = table or _settled_table(dbf_dir)
+        day = datetime.date.fromisoformat(date)
+        if add_prices(data, day, dbf_dir, table):
+            _write_day(day, data)
+            filled += 1
+            if pause:
+                time.sleep(pause)
+    return filled
+
+
+def day_non_runners(date: str) -> dict:
+    """The day's non-runners by race time: {'recorded', 'rows': [{'group', 'meeting', 'time', 'number', 'name', 'price', 'at'}]}.
+    'price' is the last before it came out, 'at' when it did, None when only SETTDATA says so."""
+    data = load_day(date)
+    rows = [{"group": race["group"], "meeting": race["meeting"], "time": race["time"], "number": run.get("number"), "name": run["name"],
+             "price": run["prices"][-1][1] if run.get("prices") else "", "at": run.get("nr_at")}
+            for race in data.get("races", []) for run in race["runners"] if run.get("nr")]
+    return {"recorded": data.get("recorded", ""), "rows": sorted(rows, key=lambda r: (r["time"], r["meeting"], r["number"] or 0))}
 
 
 def days_on_file() -> list[str]:

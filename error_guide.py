@@ -26,6 +26,16 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "been placed.",
      "Check the wager in Betty BEFORE doing anything else. Only enter it if it was not placed, or the customer is "
      "paid twice."),
+    (r"only the race 12 hours earlier came up",
+     "Race 12 hours ago",
+     "Typing a virtual race's time also brings up the race at the same clock time 12 hours earlier, and Betty's late-selection box "
+     "said about 720 minutes late. The program pressed No, then tried 'right', then 'left' and 'right', and still only got the old race.",
+     "Find the race in Betty's list by hand and answer No to the box on the old one. " + CHECK_BY_HAND),
+    (r"reads as a combination on 3 runners",
+     "Combination or each way?",
+     "A combination on 3 runners costs the same as each way singles on them, so the money can't tell them apart, and a second read "
+     "of the line wasn't sure which it says.",
+     "Read the line on the slip and enter it by hand."),
     (r"F12 was pressed on wager .* may be placed",
      "Placed? Not confirmed",
      "F12 (Place Bet) was pressed, but Betty stayed frozen on Choose Bet and Stake past the program's wait. Betty often "

@@ -37,6 +37,8 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 import app_paths
+import bad_each_way
+import extra_places
 import lessons
 import relay_logs
 import till_records
@@ -58,6 +60,7 @@ SHOP_SETTINGS = [  # (setting, label, default): shown in System, Settings; the d
 REQUIRED_SCREEN = (1366, 768)
 RECORDS_SECS = 60        # Betty's sports prices are looked at this often (user, 6 Nov)
 RESULTS_RECORD_SECS = 300  # today's past results written this often
+PAST_ROW_FONT = ("Segoe UI", 9)  # as the tables' rows; a past race's winner is this in bold
 SCREEN_NAMES = {"RACE_LIST": "Bet edit: runner list open", "BET_EDIT_BLANK": "Bet edit: nothing on the left",
                 "RACE_ENTRY": "Bet edit: race entry", "RACE_ENTRY_READY": "Bet edit: race entry, time box ready",
                 "RACE_ENTRY_EXHAUSTED": "Bet edit: no more meetings at that time"}  # as staff call them (user, 6 Nov)
@@ -440,7 +443,7 @@ HELP = [
         "Betty shows what it is doing.",
     ]),
     ("Live or test", [
-        "- The switch at the top right of the Controls tab is the mode. On (orange) = LIVE: wagers are placed. "
+        "- The switch in System, Settings is the mode. On (orange) = LIVE: wagers are placed. "
         "Off = TEST: everything is entered but it stops before placing, so you can check it.",
         "- It starts in LIVE. You can also swap with [[Shift]] + [[`]] on the till.",
     ]),
@@ -756,9 +759,9 @@ class App:
         self.tabs.pack(fill="both", expand=True, padx=8, pady=(8, 4))
         self._build_controls()
         self._build_system()
+        self.manager_till = till_records.is_manager_till()
         self._build_data()
         self._build_runners()
-        self.manager_till = till_records.is_manager_till()
         if self.manager_till:  # a cashier till has no use for them, and reading them across the network slows Betty (user, 6 Nov)
             self._build_past_results()
             self._build_sports_prices()
@@ -837,18 +840,6 @@ class App:
         self.stop_btn = RoundButton(buttons, "\u25A0  Stop", self.on_stop, colour="#C62828", fg="#FFFFFF", **big)
         for b in (self.start_btn, self.pause_btn, self.stop_btn):
             b.pack(side="left", padx=(0, 6))
-
-        mode = tk.Frame(buttons)
-        mode.pack(side="right")
-        self.mode_switch = Switch(mode, self.on_mode, on_colour=LIVE_COLOUR)
-        self.mode_switch.pack(side="right", padx=(10, 0))
-        self.mode_title = tk.Label(mode, font=("Segoe UI Semibold", 11), anchor="e")
-        self.mode_title.pack(anchor="e")
-        self.mode_caption = tk.Label(mode, font=("Segoe UI", 9), fg="#546E7A", anchor="e")
-        self.mode_caption.pack(anchor="e")
-        for w in (self.mode_title, self.mode_caption):
-            w.configure(cursor="hand2")
-            w.bind("<Button-1>", lambda e: self.on_mode())
         self.loading = ttk.Progressbar(tab, mode="indeterminate")
 
         info = ttk.Frame(tab)
@@ -860,6 +851,20 @@ class App:
             ttk.Label(info, text=label, style="Head.TLabel", width=13).grid(row=row, column=0, sticky="nw", pady=2)
             self.info[key] = ttk.Label(info, text="", style="Big.TLabel", wraplength=640, justify="left")
             self.info[key].grid(row=row, column=1, sticky="w", pady=2)
+
+    def _build_mode_setting(self, tab: ttk.Frame):
+        """The Live or Test switch (user, 6 Nov: moved here from Controls)."""
+        frame = ttk.LabelFrame(tab, text=" Live or test ", padding=10)
+        frame.pack(fill="x", pady=(0, 8))
+        self.mode_switch = Switch(frame, self.on_mode, on_colour=LIVE_COLOUR)
+        self.mode_switch.pack(side="left", padx=(0, 10))
+        self.mode_title = tk.Label(frame, font=("Segoe UI Semibold", 11))
+        self.mode_title.pack(side="left")
+        self.mode_caption = tk.Label(frame, font=("Segoe UI", 9), fg="#546E7A")
+        self.mode_caption.pack(side="left", padx=(8, 0))
+        for w in (self.mode_title, self.mode_caption):
+            w.configure(cursor="hand2")
+            w.bind("<Button-1>", lambda e: self.on_mode())
 
     def _build_sports_setting(self, tab: ttk.Frame):
         """The Sports switch: football and other sports through Betty's Master Index. Saved on this till."""
@@ -920,6 +925,7 @@ class App:
         """System > Settings: pairing this till with the relay."""
         tab = ttk.Frame(inner, padding=10)
         inner.add(tab, text=" Settings ")
+        self._build_mode_setting(tab)
         self._build_sports_setting(tab)
         shop_tab = ttk.Frame(inner, padding=10)
         inner.add(shop_tab, text=" Shop settings ")
@@ -1107,13 +1113,21 @@ class App:
         self.past_meetings.frame.pack(side="left", fill="y")
         self.past_races = self._tree(body, [("time", "Time", 50), ("done", "Result", 60)], height=18)
         self.past_races.frame.pack(side="left", fill="y", padx=8)
-        self.past_result = self._tree(body, [("pos", "Place", 50), ("no", "No.", 40), ("name", "Runner", 210), ("sp", "SP", 60),
-                                             ("last", "Last price", 80)], height=18)
-        self.past_result.frame.pack(side="left", fill="both", expand=True)
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True)
+        self.past_result = self._tree(right, [("pos", "Place", 50), ("no", "No.", 40), ("name", "Runner", 210), ("sp", "SP", 60),
+                                              ("last", "Last price", 80)], height=10)
+        self.past_result.frame.pack(fill="both", expand=True)
+        self.past_result.tag_configure("won", font=(*PAST_ROW_FONT, "bold"))
+        ttk.Label(right, text="Price history of the runner chosen", style="Head.TLabel").pack(anchor="w", pady=(6, 2))
+        self.past_history = self._tree(right, [("when", "When", 130), ("price", "Price", 70)], height=7)
+        self.past_history.frame.pack(fill="both", expand=True)
         self.past_meetings.bind("<<TreeviewSelect>>", lambda e: self.show_past_races())
         self.past_races.bind("<<TreeviewSelect>>", lambda e: self.show_past_race())
+        self.past_result.bind("<<TreeviewSelect>>", lambda e: self.show_past_history())
         self.past_data: dict = {"races": []}
         self.past_rows: dict[str, dict] = {}
+        self.past_runs: dict[str, dict] = {}
 
     def refresh_past_days(self):
         days = till_records.days_on_file()
@@ -1136,6 +1150,7 @@ class App:
             tree.insert("", "end", values=(group, meeting))
         self.past_races.delete(*self.past_races.get_children())
         self.past_result.delete(*self.past_result.get_children())
+        self.past_history.delete(*self.past_history.get_children())
         races = self.past_data.get("races", [])
         self.past_note.configure(text=f"{len(races)} races, {sum(1 for r in races if r.get('settled'))} with results. "
                                       f"Recorded {self.past_data.get('recorded', '')}.")
@@ -1145,6 +1160,7 @@ class App:
         tree = self.past_races
         tree.delete(*tree.get_children())
         self.past_result.delete(*self.past_result.get_children())
+        self.past_history.delete(*self.past_history.get_children())
         self.past_rows = {}
         if not chosen:
             return
@@ -1158,12 +1174,24 @@ class App:
         chosen = self.past_races.selection()
         tree = self.past_result
         tree.delete(*tree.get_children())
+        self.past_history.delete(*self.past_history.get_children())
+        self.past_runs = {}
         if not chosen:
             return
         for run in self.past_rows[chosen[0]]["runners"]:
             place = run.get("place")
-            tree.insert("", "end", values=(f"{place}{'=' if run.get('dead_heat') else ''}" if place else "",
-                                           run.get("number") or "", run.get("name", ""), run.get("sp", ""), run.get("price", "")))
+            shown = "NR" if run.get("nr") else f"{place}{'=' if run.get('dead_heat') else ''}" if place else ""
+            iid = tree.insert("", "end", values=(shown, run.get("number") or "", run.get("name", ""), run.get("sp", ""), run.get("price", "")),
+                              tags=("won",) if place == 1 else ())
+            self.past_runs[iid] = run
+
+    def show_past_history(self):
+        chosen = self.past_result.selection()
+        tree = self.past_history
+        tree.delete(*tree.get_children())
+        if chosen:
+            for at, price in self.past_runs[chosen[0]].get("prices", []):
+                tree.insert("", "end", values=(time.strftime("%a %d %b %H:%M:%S", time.gmtime(at)), price))
 
     def _build_sports_prices(self):
         """Sports prices: a day, an event found by search, its markets, each selection's prices and who won, and a price history."""
@@ -1274,6 +1302,9 @@ class App:
         horse results, yesterday's each hour. Nothing on a cashier till: it has no tabs for them, and reads nothing for them."""
         self.price_book = None
         self.refresh_past_days()
+        self.refresh_non_runners()
+        self.refresh_bad_each_way()
+        self.refresh_extra_places()
         if os.environ.get("BETTY_HEADLESS") == "1" or os.environ.get("BETTY_BACKEND_CMD"):  # the free tests write no records
             return
         try:
@@ -1289,9 +1320,21 @@ class App:
                 till_records.backfill()
             except Exception as e:
                 print(f"[-] Past results: {e}", file=sys.stderr)
+            try:
+                extra_places.backfill()
+            except Exception as e:
+                print(f"[-] Extra places: {e}", file=sys.stderr)
             self.inbox.put({"event": "_records", "stats": None})
+            import betty_feed
+            from meetings_manager import meetings_manager
+            card = betty_feed.BettyFeedCard(feeds=betty_feed.DEFAULT_HORSE_FEEDS,  # named: a feed Betty writes as 'Hgb00' would lose its place in the order
+                                            category_resolver=lambda m: meetings_manager.resolve_meeting(m)[0])
             while not self.closing:
                 stats = None
+                try:
+                    bad_each_way.record_day(card.get_runners())
+                except Exception as e:
+                    print(f"[-] Bad each way: {e}", file=sys.stderr)
                 try:
                     stats = self.price_book.ingest()
                     clock = time.time()
@@ -1308,6 +1351,8 @@ class App:
                         if clock - last_yesterday >= 3600:  # a late result or a resettled race, for as long as she has it
                             last_yesterday = clock
                             till_records.record_day(today - datetime.timedelta(days=1))
+                            bad_each_way.record_results(today - datetime.timedelta(days=1))
+                        extra_places.update(today)
                 except Exception as e:
                     print(f"[-] Records: {e}", file=sys.stderr)
                 self.inbox.put({"event": "_records", "stats": stats})
@@ -1318,9 +1363,126 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _build_non_runners(self, inner: ttk.Notebook):
+        """Data > Non-runners: a day's, from the records (so the manager till alone)."""
+        tab = ttk.Frame(inner, padding=6)
+        inner.add(tab, text=" Non-runners ")
+        top = ttk.Frame(tab)
+        top.pack(fill="x")
+        ttk.Label(top, text="Day", style="Head.TLabel").pack(side="left")
+        self.nr_day = tk.StringVar()
+        self.nr_days = ttk.Combobox(top, textvariable=self.nr_day, state="readonly", width=14)
+        self.nr_days.pack(side="left", padx=6)
+        self.nr_days.bind("<<ComboboxSelected>>", lambda e: self.show_non_runners())
+        self.nr_note = ttk.Label(top, text="", foreground="#546E7A")
+        self.nr_note.pack(side="left", padx=8)
+        self.nr_tree = self._tree(tab, [("time", "Time", 60), ("group", "Group", 100), ("meeting", "Meeting", 170), ("no", "No.", 45),
+                                        ("name", "Runner", 240), ("price", "Last price", 80), ("at", "Came out", 90)], height=20)
+        self.nr_tree.frame.pack(fill="both", expand=True, pady=(6, 0))
+        self.nr_shown: list = []
+
+    def refresh_non_runners(self):
+        days = till_records.days_on_file()
+        self.nr_days.configure(values=days)
+        if days and self.nr_day.get() not in days:
+            self.nr_day.set(days[0])
+        self.show_non_runners()
+
+    def show_non_runners(self):
+        day = till_records.day_non_runners(self.nr_day.get())
+        rows = [(r["time"], r["group"], r["meeting"], r["number"] or "", r["name"], r["price"],
+                 time.strftime("%H:%M:%S", time.gmtime(r["at"])) if r["at"] else "") for r in day["rows"]]
+        self.nr_note.configure(text=f"{len(rows)} non-runners. Recorded {day['recorded']}." if day["recorded"] else "Nothing on file for the day.")
+        if rows != self.nr_shown:  # looked at every minute: the table stays where it's scrolled to unless it's changed
+            self.nr_shown = rows
+            self.nr_tree.delete(*self.nr_tree.get_children())
+            for row in rows:
+                self.nr_tree.insert("", "end", values=row)
+
+    def _build_bad_each_way(self, inner: ttk.Notebook):
+        """Data > Bad each way: the races whose place terms give a punter 10% or more, a log only (bad_each_way.py)."""
+        tab = ttk.Frame(inner, padding=6)
+        inner.add(tab, text=" Bad each way ")
+        top = ttk.Frame(tab)
+        top.pack(fill="x")
+        ttk.Label(top, text="Day", style="Head.TLabel").pack(side="left")
+        self.bew_day = tk.StringVar()
+        self.bew_days = ttk.Combobox(top, textvariable=self.bew_day, state="readonly", width=14)
+        self.bew_days.pack(side="left", padx=6)
+        self.bew_days.bind("<<ComboboxSelected>>", lambda e: self.show_bad_each_way())
+        self.bew_note = ttk.Label(top, text="", foreground="#546E7A")
+        self.bew_note.pack(side="left", padx=8)
+        ttk.Label(tab, text=f"UK and Irish runners whose place part gives a punter {bad_each_way.EDGE_FLAG:.0%} or more, by an estimate from Betty's own prices. "
+                            "A log only: no bet is changed. Grey: no longer at that edge, or a non-runner.",
+                  foreground="#546E7A", wraplength=900, justify="left").pack(anchor="w", pady=(4, 0))
+        self.bew_tree = self._tree(tab, [("time", "Time", 45), ("meeting", "Meeting", 95), ("no", "No.", 30), ("name", "Runner", 151),
+                                         ("race", "Race", 125), ("terms", "Terms", 55), ("price", "Price", 50), ("edge", "Edge", 45),
+                                         ("seen", "First seen", 60), ("then", "Price then", 60), ("was", "Edge then", 60),
+                                         ("result", "Result", 70)], height=20)
+        self.bew_tree.frame.pack(fill="both", expand=True, pady=(6, 0))
+        self.bew_tree.tag_configure("dropped", foreground="#90A4AE")
+        self.bew_shown: list = []
+
+    def refresh_bad_each_way(self):
+        days = bad_each_way.days_on_file()
+        self.bew_days.configure(values=days)
+        if days and self.bew_day.get() not in days:
+            self.bew_day.set(days[0])
+        self.show_bad_each_way()
+
+    def show_bad_each_way(self):
+        day = bad_each_way.day_rows(self.bew_day.get())
+        rows = [((r["time"], r["meeting"], r["number"] or "", r["name"], r["race"], r["terms"], r["price"], f"{r['edge']:+.0%}", r["first_seen"], r["first_price"],
+                  f"{r['first_edge']:+.0%}", r["result"]), ("dropped",) if r["dropped"] else ()) for r in day["rows"]]
+        self.bew_note.configure(text=f"{day['flagged']} races, {len(rows)} runners. {day['checked']} of {day['on_card']} races checked "
+                                     f"(the rest: win only or no full prices). Recorded {day['recorded'][11:]}."
+                                if day["recorded"] else "Nothing logged for the day yet.")
+        if rows != self.bew_shown:  # looked at every minute: the table stays where it's scrolled to unless it's changed
+            self.bew_shown = rows
+            self.bew_tree.delete(*self.bew_tree.get_children())
+            for values, tags in rows:
+                self.bew_tree.insert("", "end", values=values, tags=tags)
+
+    def _build_extra_places(self, inner: ttk.Notebook):
+        """Data > Extra places: the races given other place terms on the head office terminal, by date (extra_places.py)."""
+        tab = ttk.Frame(inner, padding=6)
+        inner.add(tab, text=" Extra places ")
+        self.xp_note = ttk.Label(tab, text="", style="Head.TLabel")
+        self.xp_note.pack(anchor="w")
+        ttk.Label(tab, text="UK and Irish races with their places edited, as on Betty's card. Settled: the terms she settled the race on, kept for about three weeks. "
+                            "Red: settled on other terms than the card's. Grey: taken off the card again.",
+                  foreground="#546E7A", wraplength=900, justify="left").pack(anchor="w", pady=(4, 0))
+        self.xp_tree = self._tree(tab, [("date", "Date", 90), ("time", "Time", 55), ("meeting", "Meeting", 150), ("runners", "Runners", 60), ("race", "Race", 100),
+                                        ("places", "Places", 55), ("fraction", "Fraction", 65), ("settled", "Settled", 90)], height=20)
+        self.xp_tree.frame.pack(fill="both", expand=True, pady=(6, 0))
+        self.xp_tree.tag_configure("differs", foreground="#C62828")
+        self.xp_tree.tag_configure("off", foreground="#90A4AE")
+        self.xp_shown: list = []
+
+    def refresh_extra_places(self):
+        found = extra_places.table_rows()
+        days = {r["date"] for r in found}
+        self.xp_note.configure(text=f"{len(found)} races on {len(days)} days, back to {min(days)}" if days else "None on file yet.")
+        rows = [((r["date"], r["time"], r["meeting"], r["runners"], r["race"], r["places"], r["fraction"], r["settled"]),
+                 ("off",) if r["off"] else ("differs",) if r["differs"] else ()) for r in found]
+        if rows != self.xp_shown:  # looked at every minute: the table stays where it's scrolled to unless it's changed
+            self.xp_shown = rows
+            self.xp_tree.delete(*self.xp_tree.get_children())
+            for values, tags in rows:
+                self.xp_tree.insert("", "end", values=values, tags=tags)
+
     def _build_data(self):
-        tab = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(tab, text="  Data  ")
+        outer = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(outer, text="  Data  ")
+        tab = outer
+        if self.manager_till:
+            inner = ttk.Notebook(outer)
+            inner.pack(fill="both", expand=True)
+            tab = ttk.Frame(inner, padding=6)
+            inner.add(tab, text=" Racecard files ")
+            self._build_non_runners(inner)
+            self._build_bad_each_way(inner)
+            self._build_extra_places(inner)
         top = ttk.Frame(tab)
         top.pack(fill="x")
         ttk.Label(top, text="Racecard files today", style="Head.TLabel").pack(side="left")
@@ -1734,6 +1896,9 @@ class App:
         elif kind == "_records":
             if self.manager_till:
                 self.refresh_past_days()
+                self.refresh_non_runners()
+                self.refresh_bad_each_way()
+                self.refresh_extra_places()
                 self.refresh_sports_tab(ev.get("stats"))
         elif kind == "_data":
             self.data_busy = False

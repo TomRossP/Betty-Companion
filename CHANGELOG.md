@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.6] - 2026-11-06
+
+Offline tests and a few paid reads of the real slips: **none of this has run on a till** yet. The race 12 hours ago in particular is written
+from the user's description: no real 720-minute box has been seen by the program.
+
+### Fixed
+- **The printed Patent coupon's second box** (9.2468555, user). Its two stake boxes both say WIN, 'WIN 7 @' and 'WIN 14 @'. The second is a printing
+  error for each way, as 14 is 7 bets twice. £5 in it was read as £35 to win, against £70 paid. A full cover whose line carries twice its
+  bets is now each way, and the reader is told about the coupon.
+- **A regular customer's '50p each way' scrawl** (9.2468502, 9.2468536, 9.2468543, user: staff's entries were right). It was read as a combination
+  forecast or tricast, at the same £3, so the money couldn't catch it. The reader is told about it, and a combination on 3 runners in one race
+  has its line read again on its own: each way goes in as singles, a sure combination stands, anything else goes to staff.
+- **The race 12 hours ago at the same clock time** (9.2468536, 9.2468543, user). Typing 16:40 also brings up the 04:40 at a virtual meeting. A late-selection
+  box of 600 minutes or more is now answered No, then 'right' and the number again; if the same, 'left' then 'right' and the number again, which
+  shuffles out the duplicate meeting; if the same, staff. It used to answer Yes, and only the name check stopped it. A box under 600 minutes is a
+  real late selection: Yes, as before.
+- **A freeze with no clock on screen** (9.2468289, 9.2468533). When a wait ran out with no clock showing, it couldn't tell, and the wager went to staff a moment
+  before Betty came back. Now it waits as soon as nothing has moved, until something does, up to 25 s (`BETTY_NO_CLOCK_WAIT_SECS`). Nothing moving in that
+  time isn't a freeze, and it isn't waited for again for 30 s. A real problem on a screen with no clock reaches staff up to 25 s later.
+- **The wager shown before's details under the new number** (9.2468538). Frozen mid-draw, two reads agreed on the new number with the old wager's struck time and
+  Payment. Details the same as the wager shown before aren't taken now until Betty has shown she isn't frozen.
+- **A wager that couldn't be marked FAO is tried again** (9.2468533: never marked). Up to 3 more times, each time the watcher is back on View Wagers.
+- `live_report.py` counts each log once (the manager's were counted up to three times).
+
+### Added
+- **Past results: the winner in bold, and a price history** (user, 6 Nov). Choose a runner to see every change of its price, from Betty's monthly price history. Kept for
+  good with the day's result, so a day's file is about 125 KB (was 50). The days already on file are filled in once on starting, as far as Betty's files go (from June).
+- **Non-runners** (user, 6 Nov): NR in Past results' Place column, and a day's list in a new Non-runners tab under Data (manager till), with the last price and when it came out.
+  From Betty's price history and, once a race is settled, SETTDATA. Betty records no reason for a runner not finishing, and a runner with no placing may have finished, so those stay blank.
+- **Bad each way** (user, 6 Nov): a new tab under Data (manager till), a log only: no bet is changed. Every minute, each UK and Irish race with a full set of prices is scored from Betty's card, and a runner
+  whose place part gives a punter 10% or more is listed with the price and edge when first seen, now, and its result. The edge is an estimate. Tried on 763 races at SP, 16 Oct - 6 Nov:
+  182 runners in 67 races returned +44.7% on the place part, but +11.7% without one 300/1 shot that placed and -1.7% without the best five, so too few to prove it. The card's handicap flag, non-runner flag and
+  extra-place terms are now read.
+- **Extra places** (user, 6 Nov): a new tab under Data (manager till), a record kept for good, the latest date first: each UK and Irish race with its places edited on the head office terminal, with its places and
+  fraction as on Betty's card, and the terms she settled it on (red if they differ, grey if the edit was taken off again). Filled in once on starting from her archived cards, from 3 April. Betty's files don't say who edited a race or when.
+
+### Changed
+- **The Live or Test switch is in System, Settings** (user, 6 Nov), no longer on Controls. Shift + ` still swaps it, and the panel on the screen still says which it is.
+
 ## [1.3.5] - 2026-11-06
 
 Offline tests only: none of this has run on a till yet.
