@@ -65,6 +65,7 @@ then reopen Betty Companion. A setting left out, or not a number, keeps the usua
 - SCAN_TIMEOUT_SECS (90), RECHECK_TIMEOUT_SECS (45)  longest wait for the slip reader (raise on a slow connection)
 - GEMINI_QUOTA_PAUSE_SECS (600)   a reader out of quota is left alone this long
 - LOG_UPLOAD_SECS (120), LESSON_SYNC_SECS (60)  how often logs and lessons go to the relay
+- INDEX_LIST_SECS (3), INDEX_OPEN_SECS (8), INDEX_ADD_SECS (12)  how long Betty gets on the Master Index
 - Kept in the logs folder: STAFF_SCREENSHOTS_KEPT (20), SLIP_IMAGES_KEPT (200), REUSE_SHOTS_KEPT (10),
   CORPUS_KEPT (1500 pictures, about 90 KB each), STAFF_JOURNAL_DAYS (30)
 House rules and meetings: put this shop's own bookmaker_rules.json or meetings_directory.json next to

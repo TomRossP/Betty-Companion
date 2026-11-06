@@ -19,6 +19,8 @@ The staff guide is [release/README.txt](release/README.txt). The relay is set up
 
 - `betty_companion.py`: the program. `python betty_companion.py` runs it on its own.
 - `launcher.py`: the control window (`BettyCompanion.exe`). It runs the program with `--backend`.
+- `master_index.py`: Betty's Master Index, how sports selections are entered: which row fits, whether a list can be believed.
+  `sports_markets.json` has the market names, `index_price_glyphs.json` the price column's exact shapes.
 - `relay_link.py`: pairing with the relay. `error_guide.py`: the explanations shown in the Errors tab.
 - `python build_release.py`: builds `dist\BettyCompanion\` and the release zip. Needs PyInstaller and Tesseract
   installed on the build PC.

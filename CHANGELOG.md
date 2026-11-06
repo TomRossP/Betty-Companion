@@ -4,6 +4,69 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [1.3.0] - 2026-11-06
+
+Everything below has been through the offline tests and the real screens; **none of it has run on a till**. Sports are off until
+the Sports switch in System, Settings is turned on.
+
+### Added
+- **The Master Index, and football on handwritten slips** (user, 6 Nov). The team table (`sports_team_names.json`, 460 clubs, with
+  the user's rulings) says 'spurs' is Tottenham Hotspur, and Betty's feed files say which match, so the Master Index is searched
+  for Tottenham, never Spurs. A team to win in 90 minutes, on an all-football slip. Other markets, a slip mixing football with
+  racing, and a name the table leaves to the opponent with none written all go to staff for now.
+- **A Sports switch** in System, Settings, and the shop's settings beside it, so no file needs editing. Sports are saved on the till.
+- **Waiting** on the Controls tab: how many wagers are waiting and when the oldest was first seen.
+- **Betty's price for every runner**, from her feed files.
+
+### Changed
+- **An unclear name is looked for among every runner** (user, 6 Nov; 9.2467175). The name, as a whole or as its start, Betty's price
+  against the written one, a written time and the meeting. A runner already on the slip is left out. Harrow On The Hill, written
+  with no time and read 'MARROW ON THE' at 14-1, is found. A time borrowed from the line above no longer picks the race.
+- **A runner chosen for an unclear name must show the written price**, or it goes to staff. On the five priced picks of 5 Nov this
+  passes the four right ones and stops the wrong one. With no price written, a number written must be the runner's. A moved
+  price sends a right pick to staff. Each pick is listed in the staff journal (kind 'pick').
+- **The price box, one order for every line** (user, 6 Nov): Price when struck, the first Forward, Back 1 if 3 seconds old or less,
+  Override. A typed line used to get Override at once; if Betty offers a price when struck or a forward price, that's now taken.
+- **The watcher no longer switches itself off when it can't reach Home**: it tells staff once and tries again every minute.
+- **On a screen it doesn't know**, it saves a picture (`staff_UNKNOWN_*.png`, on the relay), gives Betty the keyboard, clicks a plainly
+  safe button (Cancel, Close, OK, Back, Continue, No, Exit), then has the screen read at most every 10 minutes. Nothing else is pressed.
+- The control window names the bet edit's screens as staff do.
+
+### Fixed
+- **A long runner list wasn't recognised** (screens 66, 67; 13 waits of about 4 s on 5 Nov, and the same screens when backing out): it
+  reaches down into where View Wagers' keypad is, so both matched. The bet edit's Cancel Bet now rules View Wagers out.
+- **The bet edit with nothing on its left**, with the Windows taskbar over it or between lists, is named `BET_EDIT_BLANK` (screen 68).
+- **SP joined to a long name** (9.2467112): 'Wordfromhome&P' reads as Wordfromhome at SP, checked against the selection as usual.
+- **'EW' read as 'WIN'** (9.2467051): when the money stays short after two scans, a bet read as win that would make up the difference
+  if each way is read again on its own. It's changed only if exactly one such line reads each way, surely.
+- **A dog's row on the previous selections** (9.2466811): 'Trap 6' is matched by its trap number.
+
+## [1.3.0] - 2026-11-05
+
+**The Master Index, ready for sports selections** (user's screenshots and video, 5 Nov, built with Betty Companion RAB 1.2.0).
+**No wager uses it yet:** a handwritten sports selection still goes to staff, until the slip reader learns to read them (the user
+will provide slips). Nothing on racing wagers changes. Tested offline on those screens; not yet run on Betty. Not built yet.
+
+### Added
+- **`master_index.py` and section 6e of `betty_companion.py`.** `SCREEN_MASTER_INDEX`; `read_index` reads the search box, the
+  state and each row's event, market, result and price, prices by their exact pixels (`index_price_glyphs.json`), since Tesseract
+  read `5-2` as `3-2` and `9-2`. A list is believed only when every row holds what was typed. A row is taken when its event,
+  market and result fit the selection, as Betty cut them off; the price only tells apart rows reading alike.
+- **When Betty bugs out** (user): wait, delete a letter and put it back, type it all again, shorter wordings, the event alone with
+  the red arrow's pages, then out by a folder button and back in, twice. Then `IndexStuck`, a kind of `WagerForStaff`.
+- **After each click the slip must show that line.** Filters left on are put back. `INDEX_TYPE_AHEAD=1` types ahead (off for now).
+- **`betty_feed.SportsCard`:** every sports selection in Betty's feed files: event, market, result, price. For a handwritten slip
+  these will be what it's matched against, as the racecards are for racing.
+- **A test tool, never used by the watcher:** `python betty_companion.py --index-probe "over 2.5; monaco" ...` opens an empty bet by
+  Accept Cash Wager, runs each search at three typing speeds, saves every frame to `logs\\index_probe_<time>`, and backs out. It can't
+  click a row, Choose Bet or F12. `--index-try "<event market result @ price>" ...` also clicks each row and checks its line, then backs
+  out. Any key or click from a person stops either.
+
+### Changed
+- `go_home` on the index clicks the slip's grey foot before Esc: Esc does nothing with the search area focused, and backs out of the
+  wager otherwise (user). With a sports selection on a wager, the previous-selections panel isn't used (Master Index rows there crash
+  Betty), and Choose Bet and Stake is clicked: the index takes no shortcuts.
+
 ## [1.2.28] - 2026-11-05
 
 ### Fixed

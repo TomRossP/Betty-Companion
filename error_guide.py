@@ -8,6 +8,17 @@ CHECK_BY_HAND = "Open the wager in Betty and enter it by hand, checking every li
 
 # (pattern, title, what it means, what to do). First match wins, so the specific ones come first.
 GUIDE: list[tuple[str, str, str, str]] = [
+    # --- The Master Index (sports selections) ---
+    (r"the Master Index shows",
+     "The Master Index shows two rows that look the same",
+     "Betty cuts long market names short, so two markets read alike ('Both Teams To Scor'), and the price didn't tell "
+     "them apart. The program won't guess.",
+     CHECK_BY_HAND),
+    (r"Master Index|after clicking .*slip's last line",
+     "The Master Index wouldn't show a selection",
+     "The Master Index kept showing nothing, or the wrong thing, for a sports selection, or the slip didn't take it. "
+     "Betty does this now and then. The program backed out with nothing placed.",
+     CHECK_BY_HAND + " If it keeps happening, close and reopen Betty: the Master Index often recovers."),
     # --- Placing ---
     (r"after F12, wager .* still in the unedited list",
      "Placed? Not confirmed",
@@ -159,7 +170,28 @@ GUIDE: list[tuple[str, str, str, str]] = [
      "Betty asked about the payment",
      "Betty showed a payment question while selections were being entered. The program never answers these.",
      "Look at Betty's question and finish the wager by hand."),
+    # --- Football on a handwritten slip ---
+    (r"but Betty has no match of theirs",
+     "No match for that team in Betty",
+     "The slip names a football team, but Betty's feed has no match of theirs still to come.",
+     "Check the slip and Betty's Master Index, and enter the wager by hand if the match is there."),
+    (r"mixing football with racing",
+     "Football and racing on one slip",
+     "The program enters slips that are all football through the Master Index, not slips mixing it with racing yet.",
+     "Enter the wager by hand."),
+    (r"a football bet with '",
+     "A football bet other than a team to win",
+     "The program enters a team to win in 90 minutes. This slip has other words on it, such as over or both teams to score.",
+     "Enter the wager by hand."),
+    (r"the football bets cost",
+     "Football bets don't match the money",
+     "The football bets as read don't come to what was paid.",
+     "Check the slip and enter the wager by hand."),
     # --- The watcher ---
+    (r"The program keeps trying",
+     "Betty can't be got back to Home",
+     "Betty is on a screen the program can't back out of. It has saved a picture, and it keeps trying every minute by itself.",
+     "Look at Betty: close whatever is on top. The program carries on by itself once Betty is back on Home."),
     (r"Staff detector didn't start",
      "Staff detector not working",
      "Windows didn't let the program watch the keyboard and mouse, so it can't tell when staff use the till. It "

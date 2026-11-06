@@ -74,6 +74,26 @@ def setting(name: str, default):
         return default
 
 
+def save_setting(name: str, value) -> None:
+    """A shop setting saved from the control window: its line in .env, replaced or added, and in effect in this process."""
+    path = env_file()
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    line = f"{name}={value}"
+    for i, old_line in enumerate(lines):
+        if old_line.split("=", 1)[0].strip() == name:
+            lines[i] = line
+            break
+    else:
+        lines.append(line)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.environ[name] = str(value)
+
+
 def network_shares() -> list[str]:
     """
     The network folders this PC keeps mapped to a drive letter (Windows' remembered connections, HKCU\\Network), as

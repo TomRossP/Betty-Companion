@@ -40,7 +40,21 @@ import lessons
 import relay_logs
 
 WINDOW_TITLE = "Betty Companion"
+SHOP_SETTINGS = [  # (setting, label, default): shown in System, Settings; the defaults are the program's own
+    ("WATCHER_POLL_SECS", "Seconds between looks at View Wagers", 5.0),
+    ("STAFF_IDLE_RESUME_SECS", "Seconds before resuming after staff use the till", 60),
+    ("HOME_RETRY_SECS", "Seconds between tries to get back to Home", 60.0),
+    ("SCAN_TIMEOUT_SECS", "Slip reader time limit (seconds)", 90),
+    ("RECHECK_TIMEOUT_SECS", "Selection check time limit (seconds)", 45),
+    ("STAFF_SCREENSHOTS_KEPT", "Staff screens kept", 20),
+    ("SLIP_IMAGES_KEPT", "Slip pictures kept", 200),
+    ("CORPUS_KEPT", "Test pictures kept", 1500),
+    ("STAFF_JOURNAL_DAYS", "Days of staff entries kept", 30),
+]
 REQUIRED_SCREEN = (1366, 768)
+SCREEN_NAMES = {"RACE_LIST": "Bet edit: runner list open", "BET_EDIT_BLANK": "Bet edit: nothing on the left",
+                "RACE_ENTRY": "Bet edit: race entry", "RACE_ENTRY_READY": "Bet edit: race entry, time box ready",
+                "RACE_ENTRY_EXHAUSTED": "Bet edit: no more meetings at that time"}  # as staff call them (user, 6 Nov)
 GEMINI_CHECK_SECS = 300   # the free Gemini check, every 5 minutes (and on a click)
 DATA_REFRESH_SECS = 60    # racecards, meetings and runners
 LESSON_SYNC_SECS = 60     # what staff taught, shared with the shop's other tills (lessons.sync)
@@ -827,16 +841,73 @@ class App:
         info.pack(fill="x", pady=(16, 8))
         self.info: dict[str, ttk.Label] = {}
         for row, (key, label) in enumerate([("program", "Program"), ("watcher", "Watcher"), ("screen", "Betty shows"),
-                                            ("wager", "Wager"), ("message", "Last message"),
+                                            ("wager", "Wager"), ("queue", "Waiting"), ("message", "Last message"),
                                             ("outcome", "Last outcome"), ("reader", "Slip reader")]):
             ttk.Label(info, text=label, style="Head.TLabel", width=13).grid(row=row, column=0, sticky="nw", pady=2)
             self.info[key] = ttk.Label(info, text="", style="Big.TLabel", wraplength=640, justify="left")
             self.info[key].grid(row=row, column=1, sticky="w", pady=2)
 
+    def _build_sports_setting(self, tab: ttk.Frame):
+        """The Sports switch: football and other sports through Betty's Master Index. Saved on this till."""
+        frame = ttk.LabelFrame(tab, text=" Sports ", padding=10)
+        frame.pack(fill="x", pady=(0, 8))
+        self.sports_switch = Switch(frame, self.on_sports, on_colour=LIVE_COLOUR)
+        self.sports_switch.pack(side="left", padx=(0, 10))
+        self.sports_text = ttk.Label(frame, text="", style="Big.TLabel", wraplength=700, justify="left")
+        self.sports_text.pack(side="left", fill="x")
+        self.want_sports = bool(app_paths.setting("SPORTS_ON", app_paths.setting("RAB_SPORTS", 0)))
+        self._show_sports()
+
+    def _show_sports(self):
+        self.sports_switch.set(self.want_sports)
+        self.sports_text.configure(text="Sports bets are ON: entered through the Master Index." if self.want_sports else
+                                   "Sports bets are OFF: they go to staff, as before.")
+
+    def on_sports(self):
+        self.want_sports = not self.want_sports
+        if self.want_sports and not self.want_test and self.backend.alive() and not messagebox.askyesno(
+                WINDOW_TITLE, "Turn sports on while LIVE?\n\nSports bets will be PLACED. Not yet proven on a till: "
+                              "test mode is safer.", icon="warning"):
+            self.want_sports = False
+            return
+        app_paths.save_setting("SPORTS_ON", 1 if self.want_sports else 0)
+        self.backend.send("sports on" if self.want_sports else "sports off")
+        self._show_sports()
+
+    def _build_shop_settings(self, tab: ttk.Frame):
+        """The shop's settings, so nobody edits a file: each saved on this till, in effect from the next Start."""
+        frame = ttk.LabelFrame(tab, text=" Shop settings (from the next Start) ", padding=10)
+        frame.pack(fill="x", pady=(0, 8))
+        self.shop_values: dict[str, tuple[tk.StringVar, float | int]] = {}
+        for i, (name, label, default) in enumerate(SHOP_SETTINGS):
+            row, col = i // 2, (i % 2) * 2
+            ttk.Label(frame, text=label).grid(row=row, column=col, sticky="w", padx=(0 if col == 0 else 18, 6), pady=2)
+            var = tk.StringVar(value=str(app_paths.setting(name, default)))
+            self.shop_values[name] = (var, default)
+            ttk.Entry(frame, textvariable=var, width=7).grid(row=row, column=col + 1, sticky="w")
+        RoundButton(frame, "Save settings", self.on_save_settings).grid(
+            row=len(SHOP_SETTINGS) // 2 + 1, column=0, sticky="w", pady=(8, 0))
+
+    def on_save_settings(self):
+        for name, (var, default) in self.shop_values.items():
+            try:
+                value = type(default)(float(var.get().strip()))
+            except ValueError:
+                messagebox.showerror(WINDOW_TITLE, f"'{var.get()}' isn't a number.")
+                return
+            if value < 0:
+                messagebox.showerror(WINDOW_TITLE, f"'{var.get()}' can't be below zero.")
+                return
+            if value != app_paths.setting(name, default):
+                app_paths.save_setting(name, value)
+        messagebox.showinfo(WINDOW_TITLE, "Saved. They apply from the next Start.")
+
     def _build_settings(self, inner: ttk.Notebook):
         """System > Settings: pairing this till with the relay."""
         tab = ttk.Frame(inner, padding=10)
         inner.add(tab, text=" Settings ")
+        self._build_sports_setting(tab)
+        self._build_shop_settings(tab)
         relay = ttk.LabelFrame(tab, text=" Relay: the slip reader's connection ", padding=10)
         relay.pack(fill="x")
         self.relay_status = ttk.Label(relay, text="", style="Big.TLabel", wraplength=780, justify="left")
@@ -1376,6 +1447,8 @@ class App:
                 self._add_error(text)  # a wager for staff is listed from the journal, with its reason
         elif kind == "outcome":
             self.info["outcome"].configure(text=ev.get("text", ""))
+        elif kind == "queue":
+            self.info["queue"].configure(text=ev.get("text", ""))
         elif kind in ("staff", "manual"):
             self.root.after(300, self.reload_records)
         elif kind in ("error", "fatal"):
@@ -1542,7 +1615,7 @@ class App:
         else:
             watcher = "On" if w.get("watcher") else "Off (paused)"
         self.info["watcher"].configure(text=watcher)
-        self.info["screen"].configure(text=(w.get("screen") or "") if alive else "")
+        self.info["screen"].configure(text=SCREEN_NAMES.get(w.get("screen"), w.get("screen") or "") if alive else "")
         self.info["wager"].configure(text=(w.get("wager") or "none") if alive else "")
         if not alive and self.state == "stopped":
             self.info["reader"].configure(text=self.info["reader"].cget("text") or "Shown when the program starts")

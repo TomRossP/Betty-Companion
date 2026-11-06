@@ -38,11 +38,14 @@ a = Analysis(  # noqa: F821
     pathex=[ROOT],
     datas=[(os.path.join(ROOT, "bookmaker_rules.json"), "."),
            (os.path.join(ROOT, "meetings_directory.json"), "."),
+           (os.path.join(ROOT, "sports_markets.json"), "."),
+           (os.path.join(ROOT, "sports_team_names.json"), "."),
+           (os.path.join(ROOT, "index_price_glyphs.json"), "."),
            (os.path.join(STAGE, "VERSION"), "."),
            (os.path.join(ROOT, "assets", "betty.ico"), "assets")],
     # Imported inside functions (the window loads the program only with --backend)
     hiddenimports=["betty_companion", "rules_engine", "meetings_manager", "betty_feed", "relay_link", "relay_logs",
-                   "error_guide"],
+                   "error_guide", "master_index", "sports_names"],
     # Installed on the build PC but never used: kept out (OpenCV alone is ~70 MB). Also pulled in but never used:
     # setuptools (PyInstaller's hook), numpy's test tools (loaded only when asked for; they bring win32pdh), and
     # Pillow's AVIF, WebP and colour-profile support (Pillow skips a missing format plugin). ~10 MB.

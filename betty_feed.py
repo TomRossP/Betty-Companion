@@ -183,18 +183,21 @@ def decode_feed(data: bytes) -> list[dict]:
             secs = struct.unpack_from("<I", data, rb + 46)[0] - midnight
             if not 0 <= secs < 86400:
                 continue
-            names = []
+            names, prices = [], []
             for p in range(rb + 80, rb + RACE_STRIDE - 3, 4):
                 idx = struct.unpack_from("<i", data, p)[0]
                 if idx < 0:
                     break
-                off = runner_base + idx * RUNNER_STRIDE + RUNNER_NAME_OFF
+                base = runner_base + idx * RUNNER_STRIDE
+                off = base + RUNNER_NAME_OFF
                 names.append(_cstr(data[off: off + RUNNER_STRIDE - RUNNER_NAME_OFF]) if off < len(data) else "")
+                top, bottom = struct.unpack_from("<HH", data, base + RUNNER_PRICE_OFF) if base + RUNNER_STRIDE <= len(data) else (0, 0)
+                prices.append(f"{top}-{bottom}" if bottom else "")  # Betty's price now; '' = none
             if names:
                 races.append({
                     "meeting": meeting, "country": country,
                     "time_str": f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}", "minutes": secs // 60,
-                    "runners": names, "event_id": struct.unpack_from("<I", data, rb + RACE_EVENT_ID_OFF)[0],
+                    "runners": names, "prices": prices, "event_id": struct.unpack_from("<I", data, rb + RACE_EVENT_ID_OFF)[0],
                 })
     return races
 
@@ -310,6 +313,7 @@ class BettyFeedCard:
                             "country": race["country"], "event_id": race["event_id"],
                             "feed": os.path.basename(path)[3:-4],  # e.g. 'HGB00': which Betty folder the race is in
                             "dogs": self.greyhounds,  # a dog race, virtual dogs too (category 'virtual')
+                            "price": race["prices"][cloth - 1],
                         })
         self._signature, self._runners = signature, runners
         self._meetings = tuple(sorted({r["meeting"] for r in runners if r["category"] != "virtual"}))
@@ -327,6 +331,88 @@ class BettyFeedCard:
         """Today's real (not virtual) meetings on this card, e.g. every greyhound track Betty has races for."""
         self.get_runners()
         return self._meetings
+
+
+# --- Sports: the same files. A 'meeting' is an event, a 'race' a market (its name first in the race block), a 'runner' a
+# result with its price. Checked on 5 Nov against Betty's Master Index: all 24 rows of two screens, at the same prices. A
+# shop till's feed and a Request A Bet till's hold different data (the website's wording) in the same layout (user).
+RACE_NAME_LEN = 46
+RUNNER_PRICE_OFF = 62  # two uint16: the top and bottom of the price. 0-0 = no price (the index shows NO)
+
+
+def decode_sports_feed(data: bytes) -> list[dict]:
+    """One feed file's selections: {'event', 'market', 'result', 'price' ('19-20', or '' for none), 'starts' (when, Betty's timestamp)}."""
+    n_meetings = struct.unpack_from("<H", data, MEETING_COUNT_OFF)[0]
+    runner_base = HEADER_SIZE + n_meetings * MEETING_STRIDE
+    if n_meetings == 0 or runner_base > len(data):
+        raise ValueError(f"unexpected layout ({n_meetings} meetings, {len(data)} bytes)")
+    records = []
+    for mi in range(n_meetings):
+        mb = HEADER_SIZE + mi * MEETING_STRIDE
+        event = _cstr(data[mb + 11: mb + 37])
+        for ri in range(struct.unpack_from("<H", data, mb + 42)[0]):
+            rb = mb + RACE_FIRST_OFF + ri * RACE_STRIDE
+            if rb + RACE_STRIDE > runner_base:
+                break
+            market = _cstr(data[rb: rb + RACE_NAME_LEN])
+            starts = struct.unpack_from("<I", data, rb + 46)[0]
+            for p in range(rb + 80, rb + RACE_STRIDE - 3, 4):
+                idx = struct.unpack_from("<i", data, p)[0]
+                if idx < 0:
+                    break
+                off = runner_base + idx * RUNNER_STRIDE
+                if off + RUNNER_STRIDE > len(data):
+                    break
+                top, bottom = struct.unpack_from("<HH", data, off + RUNNER_PRICE_OFF)
+                records.append({"event": event, "market": market, "starts": starts,
+                                "result": _cstr(data[off + RUNNER_NAME_OFF: off + RUNNER_STRIDE]),
+                                "price": f"{top}-{bottom}" if bottom else ""})
+    return records
+
+
+class SportsCard:
+    """Every sports selection in Betty's feed files, of any day (the Master Index lists them all), re-read when a file changes."""
+
+    def __init__(self, events_dir: str | None = None):
+        self._events_dir = events_dir
+        self._files: dict[str, tuple] = {}  # path -> (time, size, its records)
+        self._records: list[dict] = []
+        self._checked_at = 0.0
+
+    def records(self) -> list[dict]:
+        """Each with its 'file' and 'sport'. Racing and the numbers draws are left out; a file that won't read is skipped."""
+        if self._records and time.monotonic() - self._checked_at < RECHECK_SECS:
+            return self._records
+        self._checked_at = time.monotonic()
+        events_dir = self._events_dir or events_folder()
+        try:
+            names = [f for f in os.listdir(events_dir) if f.lower().endswith(".dat")]
+        except OSError:
+            return self._records
+        changed, files = False, {}
+        for name in names:
+            path = os.path.join(events_dir, name)
+            try:
+                stamp = (os.path.getmtime(path), os.path.getsize(path))
+                old = self._files.get(path)
+                if old and old[:2] == stamp:
+                    files[path] = old
+                    continue
+                changed = True
+                sport = feed_sport(path)
+                found = []
+                if sport and sport != "LOT" and not RACING_SPORT.search(sport):
+                    with open(path, "rb") as f:
+                        found = [dict(r, file=name, sport=sport) for r in decode_sports_feed(f.read())]
+                files[path] = (*stamp, found)
+            except (OSError, ValueError, struct.error) as e:  # Betty may be rewriting it: as it was, until the next look
+                print(f"[-] Betty feed: {name} can't be read for sports: {e}")
+                if path in self._files:
+                    files[path] = self._files[path]
+        if changed or len(files) != len(self._files):
+            self._files = files
+            self._records = [r for found in files.values() for r in found[2]]
+        return self._records
 
 
 OFF_TRANS_TYPE = "87"  # transact.DBF: Betty's off slip, one per event sent off

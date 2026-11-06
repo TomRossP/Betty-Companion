@@ -1,4 +1,4 @@
-__version__ = "1.2.28"
+__version__ = "1.3.0"
 APP_NAME = f"Betty Companion v{__version__}"
 
 
@@ -203,10 +203,14 @@ from rules_engine import (
 )
 
 # Betty local racecard feeds (C:\Events)
-from betty_feed import BettyFeedCard, BettyOffTimes, DOMESTIC_COUNTRIES, DOG_SPORTS
+from betty_feed import BettyFeedCard, BettyOffTimes, DOMESTIC_COUNTRIES, DOG_SPORTS, SportsCard
 
 # Centralized Meetings Directory Manager (Virtual, Greyhound, International & Aliases)
 from meetings_manager import meetings_manager
+
+# Betty's Master Index: how sports selections are entered
+import master_index as mi
+import sports_names
 
 # --- 0. WINDOWS DPI AWARENESS & DYNAMIC SCREEN METRICS ---
 try:
@@ -811,6 +815,7 @@ def match_runner_to_racecard(horse: dict, runners: list[dict], slip_meetings: se
         return False, None, []
     target_mins, _ = parse_race_time_to_minutes(raw_time)
     hinted = _hinted_meeting(horse)
+    borrowed = bool(horse.get('_time_borrowed'))  # no time written: the line above's says little about an unclear name
 
     def time_gap(r: dict) -> int | None:
         return abs(r['minutes'] - target_mins) if target_mins is not None and r.get('minutes') is not None else None
@@ -851,7 +856,7 @@ def match_runner_to_racecard(horse: dict, runners: list[dict], slip_meetings: se
             return True, best_r, []
 
         # Stage 2: the race(s) at the written time
-        if target_mins is not None and not race_at_time_seen:
+        if target_mins is not None and not race_at_time_seen and not borrowed:
             for window in (0, TIME_AGREE_MINS):
                 in_window = [(s, r) for s, r in tier if (tg := time_gap(r)) is not None and tg <= window]
                 if hinted:
@@ -2962,17 +2967,103 @@ def race_list_for_selection(horse: dict, runners: list[dict]) -> list[dict]:
     return sorted(chosen, key=lambda r: (r['minutes'], r['meeting'], r.get('number') or 0))
 
 
+WHOLE_CARD_FIT = 0.70       # how well the writing must fit a runner's name when the written price agrees too
+WHOLE_CARD_FIT_ALONE = 0.88  # ... when there's no written price to agree
+WHOLE_CARD_MARGIN = 0.12    # how far ahead of the next runner it must be
+WHOLE_CARD_OFFER = 10       # runners from the whole card shown to the race-list check
+
+
+def name_fit(written: str, runner: str) -> float:
+    """How well writing fits a runner's name, as a whole or as its start: customers stop writing ('HARROW ON THE')."""
+    a, b = clean_horse_name(written), clean_horse_name(runner)
+    if not a or not b:
+        return 0.0
+    whole = name_similarity(a, b)
+    return max(whole, name_similarity(a, b[:len(a)]) - 0.03) if len(a) >= 6 and len(a) < len(b) else whole
+
+
+def written_price(horse: dict) -> Fraction | None:
+    """The price written beside a selection, None for SP or nothing."""
+    return _price_value(horse.get('price')) if str(horse.get('price') or '').strip().lower() not in ('', 'sp', 'none', '0') else None
+
+
+def whole_card_ranking(horse: dict, runners: list[dict], struck_mins: float | None, taken: tuple = ()) -> list[dict]:
+    """
+    An unclear name against every runner still to run when the bet was struck, using all that's known about the
+    selection (user, 6 Nov): how the name fits, Betty's price against the written one, the written time if there is one
+    (a time borrowed from the line above counts for nothing) and the meeting. A runner already on the slip as another
+    selection is left out. Best first: [{'runner', 'score', 'fit', 'agrees' (True / False / None: nothing to compare)}].
+    """
+    want = written_price(horse)
+    hinted = _hinted_meeting(horse)
+    times = set() if horse.get('_time_borrowed') else written_race_times(horse)
+    ranked = []
+    for r in runners:
+        if r.get('category') == 'virtual' or not still_to_run(r, struck_mins):
+            continue
+        if (r['meeting'], r['time_str'], r.get('number')) in taken:
+            continue
+        fit = name_fit(str(horse.get('name') or ''), r['name'])
+        betty = _price_value(r.get('price'))
+        agrees = None if want is None or betty is None else want == betty
+        score = fit + {True: 0.25, False: -0.05, None: 0.0}[agrees]
+        if times:
+            score += 0.10 if any(abs((r.get('minutes') or 0) - m) <= TIME_AGREE_MINS for m in times) else -0.10
+        if hinted and _meeting_matches(r['meeting'], hinted):
+            score += 0.05
+        ranked.append({'runner': r, 'score': score, 'fit': fit, 'agrees': agrees})
+    ranked.sort(key=lambda c: c['score'], reverse=True)
+    return ranked
+
+
+def whole_card_pick(ranked: list[dict]) -> dict | None:
+    """The best of whole_card_ranking when it clearly stands out, on its name and the written price, or its name alone."""
+    if not ranked:
+        return None
+    best = ranked[0]
+    same_name = clean_horse_name(best['runner']['name'])
+    next_score = next((c['score'] for c in ranked[1:] if clean_horse_name(c['runner']['name']) != same_name), 0.0)
+    if best['score'] - next_score < WHOLE_CARD_MARGIN:
+        return None
+    if best['agrees'] is False:
+        return None
+    return best if best['fit'] >= (WHOLE_CARD_FIT if best['agrees'] else WHOLE_CARD_FIT_ALONE) else None
+
+
+def pick_doubt(horse: dict, runner: dict) -> str | None:
+    """
+    Why a runner chosen for an unclear name can't stand. Written price: Betty's must be the same (9.2467175: 14-1 written,
+    Mountain Of Light was 9-1; the four right picks that day all agreed). No price: a runner number written must be its
+    number. A moved price sends a right pick to staff, which is the safe way to be wrong.
+    """
+    want = written_price(horse)
+    if want is not None:
+        betty = _price_value(runner.get('price'))
+        if betty is None:
+            return f"Betty has no price for {runner['name']} to compare with the {horse.get('price')} written"
+        if betty != want:
+            return f"{horse.get('price')} is written, but Betty has {runner['name']} at {runner.get('price')}"
+        return None
+    number = re.search(r'\d+', str(horse.get('name') or ''))
+    if number and int(number.group(0)) == runner.get('number'):
+        return None
+    return f"no price is written to check {runner['name']} against"
+
+
 def reexamine_runner_with_ai(horse: dict, horse_idx: int, img_str: str, api_key: str, candidates: list[dict], runners: list[dict]) -> dict | None:
     """
     Race-list check for one selection the matcher could not confirm, done the way a cashier does it: the reader
     sees every runner in the race(s) at the written time (meeting letter respected) plus the matcher's best
-    guesses, copies the letter shapes as written, then compares them with the real names. Price is never used.
+    guesses from the whole card, copies the letter shapes as written, then compares them with the real names. Betty's
+    price is shown as support, never as the reason. A time borrowed from the line above isn't a written time.
     Accepted only with high confidence; a pick outside the races at the written time also needs a strong name
     fit, so a misread time cannot let a loosely similar name through.
     Returns the runner, or None (the caller then asks staff to confirm the selection).
     """
     if not img_str or not api_key:
         return None
+    if horse.get('_time_borrowed'):
+        horse = {**horse, 'raw_time': '', 'written_time': '', 'time': ''}
     in_race = race_list_for_selection(horse, runners)
     elsewhere = [c for c in candidates if c not in in_race]
     options = in_race + elsewhere
@@ -2994,7 +3085,8 @@ def reexamine_runner_with_ai(horse: dict, horse_idx: int, img_str: str, api_key:
         if i <= len(in_race) and race != last_race:
             listing.append(f"{race}:")
             last_race = race
-        listing.append(f"  {i}. {r['name']}" + (f" ({race})" if i > len(in_race) else ""))
+        listing.append(f"  {i}. {r['name']}" + (f" ({race})" if i > len(in_race) else "")
+                       + (f" [Betty's price {r['price']}]" if r.get('price') else ""))
     options_txt = "\n".join(listing)
 
     pick = _ask_vision_json(
@@ -3011,7 +3103,8 @@ Work the way an experienced cashier does:
    below the line, the length, and how the name ends. Names are often written as one run-together word.
 3. Common handwriting confusions: 'op'/'w', 'ie'/'ke', 'i'/'r'/'e', 'a'/'o', 'n'/'h', 'rs'/'sh', 'lla'/'ck',
    and fast capitals F/G, R/L, M/N.
-4. The odds written beside the name are the price taken, not the starting price. Never use them to choose a runner.
+4. The odds written beside the name are the price taken. Betty's current price is shown beside each runner. A match
+   supports a runner whose letter shapes fit, but never choose a runner because of its price alone.
 5. Never change what you read to make it fit a runner. If no runner fits the letter shapes, answer 0.
 Answer "high" confidence only when the letter shapes clearly fit one runner and no other.
 Return JSON: {{"letter_shapes": "...", "choice": <0-{len(options)}>, "confidence": "high" or "low"}}""",
@@ -3033,8 +3126,8 @@ Return JSON: {{"letter_shapes": "...", "choice": <0-{len(options)}>, "confidence
     if choice <= len(in_race):
         print(f"[*] Race-list check: '{shapes}' -> '{chosen['name']}' ({chosen['meeting']} {chosen['time_str']}), in the race at the written time.")
         return chosen
-    fit = max((name_similarity(clean_horse_name(n), clean_horse_name(chosen['name'])) for n in (shapes, first_read) if n), default=0.0)
-    if fit >= NAME_ACCEPT_WITH_TIME:
+    fit = max((name_fit(n, chosen['name']) for n in (shapes, first_read) if n), default=0.0)
+    if fit >= NAME_ACCEPT_WITH_TIME or (fit >= 0.5 and not pick_doubt(horse, chosen)):
         print(f"[*] Race-list check: '{shapes}' -> '{chosen['name']}' ({chosen['meeting']} {chosen['time_str']}), strong name fit {fit:.2f}.")
         return chosen
     print(f"[!] Race-list pick '{chosen['name']}' not accepted: it is not in a race at the written time and the name fit is only {fit:.2f}.")
@@ -3627,12 +3720,31 @@ def state_pre_scan_and_match_slip(slip_data, raw_selections=None, img_str=None, 
                 _lesson_used(lesson)
                 _resolve((h_time, h_name), runner_match, price)
                 continue
+            # Stage 2b: every runner on the card, with all that's known about the selection (user, 6 Nov)
+            taken = tuple((r['meeting'], r['time'], r.get('number')) for r in resolved_map.values())
+            ranked = whole_card_ranking(sample_horse, runners, struck_mins, taken)
+            best = whole_card_pick(ranked)
+            if best:
+                r = best['runner']
+                print(f"[+] Whole card: '{orig_name}' -> '{r['name']}' #{r.get('number')} at {r['meeting']} ({r['time_str']}), "
+                      f"name fit {best['fit']:.2f}, Betty's price {r.get('price') or 'none'}{p_disp}")
+                journal_staff('pick', wager=_current_wager, written=orig_name, price=price, chosen=r['name'],
+                              race=f"{r['meeting']} {r['time_str']}", betty_price=r.get('price'), how="whole card")
+                _resolve((h_time, h_name), r, price)
+                race_list_picks.add((h_time, h_name))
+                continue
+            top3 = [c['runner'] for c in ranked[:WHOLE_CARD_OFFER]] or top3
 
         # Stage 3a: race-list check of the handwriting against every runner in the race(s) at the written time
         if number is None and not is_fav and not blank and img_str and api_key:
             choice = reexamine_runner_with_ai(sample_horse, horse_idx, img_str, api_key, top3, runners)
-            if choice:
+            doubt = pick_doubt(sample_horse, choice) if choice else None
+            if doubt:
+                print(f"[!] Race-list pick '{choice['name']}' for '{orig_name}' not accepted: {doubt}.")
+            elif choice:
                 print(f"[+] Re-check confirmed '{orig_name}' -> '{choice['name']}' #{choice.get('number')} at {choice['meeting']} ({choice['time_str']}){p_disp}")
+                journal_staff('pick', wager=_current_wager, written=orig_name, price=price, chosen=choice['name'],
+                              race=f"{choice['meeting']} {choice['time_str']}", betty_price=choice.get('price'), how="race-list check")
                 _resolve((h_time, h_name), choice, price)
                 race_list_picks.add((h_time, h_name))
                 if sample_horse.get('_time_borrowed'):
@@ -3795,6 +3907,37 @@ def bets_reading_signature(bets_list: list[dict]) -> tuple:
                   b.get('cost_pence')) for b in bets_list or [])
 
 
+def each_way_second_read(slip_data: list[dict], img_str: str, short_by: int) -> bool:
+    """
+    The money is short, and two scans read the same bets. A bet read as win that would cost exactly the shortfall more if
+    it were each way may be an 'EW' misread (9.2467051: '50 EW DOUB' read '50p WIN DOUB', 50p short). Each such line is read
+    again on its own, not told what's expected. It's changed only if exactly one comes back each way, surely.
+    """
+    candidates = [b for b in slip_data if not b.get('each_way') and calculate_bet_cost_pence(b) == short_by]
+    found = []
+    for bet in candidates:
+        line = f"on line {bet['line_num']} of the writing (counting from the top), " if bet.get('line_num') else ""
+        answer = _ask_vision_json(
+            f"""You are checking one stake line on a handwritten betting slip. Find the bet line {line}first read as
+"{bet.get('description')}". Read only how the stake is placed, letter by letter from the ink: to win ('WIN', 'W') or each way
+('EW', 'E/W', 'E.W'). Don't work it out from the money or from other lines.
+Answer "high" confidence only if the letters are clear.
+Return JSON: {{"letters": "...", "stake": "win" or "each way", "confidence": "high" or "low"}}""",
+            img_str, "reader-chain",
+            {"type": "OBJECT", "properties": {"letters": {"type": "STRING"}, "stake": {"type": "STRING"},
+                                              "confidence": {"type": "STRING"}},
+             "required": ["letters", "stake", "confidence"], "propertyOrdering": ["letters", "stake", "confidence"]},
+            f"Second read of the stake on '{bet.get('description')}'")
+        if answer and str(answer.get('stake')).lower() == 'each way' and str(answer.get('confidence')).lower() == 'high':
+            found.append(bet)
+    if len(found) != 1:
+        print(f"[*] Second read of {len(candidates)} line(s) that could be each way: {len(found)} read so; nothing changed.")
+        return False
+    found[0]['each_way'] = True
+    print(f"[+] A second read says '{found[0].get('description')}' is each way: that accounts for the money.")
+    return True
+
+
 def scan_and_reconcile(api_key, payment_pence: int | None = None, struck_time: str | None = None) -> dict:
     """
     Reads the slip on the race-entry screen and rescans (up to MAX_SCAN_ATTEMPTS, with a targeted hint) until the bets
@@ -3855,6 +3998,12 @@ def scan_and_reconcile(api_key, payment_pence: int | None = None, struck_time: s
         reading = bets_reading_signature(slip_data)
         if reading == last_reading:
             print("[!] The rescan read the same bets as the scan before it: rescanning again won't change the money.")
+            if calc < target and img_str and each_way_second_read(slip_data, img_str, target - calc):
+                calc = sum(calculate_bet_cost_pence(b) for b in slip_data)
+                out.update(calc_total_pence=calc)
+                if calc == target:
+                    out['ok'] = True
+                    return out
             out['reason'] = (f"Money mismatch: the bets cost £{calc / 100:.2f} but £{target / 100:.2f} was "
                              f"{what.split(' (')[0]}; two scans read the same bets.{_own_sums_note(written, target)}")
             return out
@@ -3893,9 +4042,14 @@ MODAL_LATE_SELECTION = "MODAL_LATE_SELECTION"  # red border: "Wager staked N min
 MODAL_PRICE = "MODAL_PRICE"                    # blue border: "The price you entered was not correct..." (answer_price_box)
 MODAL_PAYMENT_MISMATCH = "MODAL_PAYMENT_MISMATCH"  # after F12, red: "Payment is not the same as on the original empty bet..."
 MODAL_CONFIRM_STAKE = "MODAL_CONFIRM_STAKE"        # after No on the above, blue: "Please confirm this is the stake tendered"
+MODAL_READ_FAILURE = "MODAL_READ_FAILURE"      # red: "Failure to Read Complete Data - End of File? ... \\Events\\5byBFTRP.dat" (Continue)
 MODAL_EDITED_ELSEWHERE = "MODAL_EDITED_ELSEWHERE"  # after End, red: "Bet is marked as in the process of being edited on Manager Terminal!" (Continue)
+SCREEN_MASTER_INDEX = "MASTER_INDEX"          # the search across every folder, with its cyan letter buttons: sports selections
 SCREEN_BET_AND_STAKE = "BET_AND_STAKE"        # F8 "Choose Bet and Stake" (Place Bet / F12 lives here)
+SCREEN_BET_EDIT_BLANK = "BET_EDIT_BLANK"      # the bet edit with no list on the left, in the moment between lists or
+#                                               with Windows' taskbar over it (staff_9.2459953, user, 6 Nov)
 SCREEN_UNKNOWN = "UNKNOWN"
+SCREENS_NOT_SURE = (SCREEN_UNKNOWN, SCREEN_BET_EDIT_BLANK)  # nothing here says which step of the edit it is
 
 _BETTY_CYAN_HEADER = ((600, 30, 600, 25), (0, 255, 255), 0.7)  # "Your Betting Slip" header (S2-S4)
 # Choose Bet and Stake is green until a selection is on the slip, then yellow (with a green Place Bet beside it)
@@ -3911,6 +4065,9 @@ SCREEN_SIGNATURES = {
     SCREEN_VIEW_WAGERS: {
         'colours': [((295, 278, 180, 255), (128, 255, 255), 0.5),   # cyan keypad
                     _BETTY_CYAN_HEADER],
+        # A long runner list reaches down into where the keypad is (staff_9.2466825, 5 Nov), so the bet edit's Cancel Bet
+        # rules View Wagers out: both matched, and the screen went unnamed
+        'absent': [((940, 634, 80, 110), (0, 128, 0), 0.5)],
         'label': ((290, 180, 265, 30), ("number",)),                # "View Wager Number:"
     },
     SCREEN_EVENT_MENU: {
@@ -3937,6 +4094,13 @@ SCREEN_SIGNATURES = {
                     ((5, 5, 128, 200), (64, 255, 255), 0.15, 70)],  # cyan / light-cyan / hatched runner list
         'absent': [((8, 110, 205, 35), (193, 0, 0), 0.2)],          # no red meeting-list header
         'label': ((5, 5, 128, 30), ()),                              # first row reads "Meet H:MM"
+    },
+    SCREEN_MASTER_INDEX: {  # any state of it: empty, a list, "No selections found", or Betty's repeating list (mi_2-7, mi_11)
+        'colours': [((405, 233, 80, 315), (128, 255, 255), 0.5),    # the cyan letter buttons
+                    _CHOOSE_BET_BUTTON,
+                    ((940, 634, 80, 110), (0, 128, 0), 0.5)],       # dark green Cancel Bet
+        'absent': [((8, 110, 205, 35), (193, 0, 0), 0.2)],          # no red meeting-list header
+        'label': ((405, 265, 80, 60), ("abc", "def")),              # the letter buttons' own letters
     },
     SCREEN_BET_AND_STAKE: {  # only parts present the moment F8 opens (Place Bet turns green, the bet list grows later)
         'colours': [((10, 78, 278, 45), (193, 0, 0), 0.6),          # red "Please Choose the Bet You Require Here"
@@ -3965,6 +4129,12 @@ MODAL_SIGNATURES = {
                     ((360, 310, 640, 140), (255, 255, 255), 0.8)],
         'label': ((380, 340, 620, 80), ("beingedited", "processofbeing")),
     },
+    MODAL_READ_FAILURE: {  # the same red box: Betty reading a feed file as it's rewritten, on a Master Index search (mi_16)
+        'colours': [((350, 291, 665, 6), (255, 0, 0), 0.6),
+                    ((343, 300, 6, 230), (255, 0, 0), 0.8),
+                    ((360, 310, 640, 140), (255, 255, 255), 0.8)],
+        'label': ((360, 350, 650, 60), ("failuretoread", "completedata", "endoffile")),
+    },
     MODAL_CONFIRM_STAKE: {
         'colours': [((95, 177, 495, 6), (0, 0, 255), 0.4),         # blue top border
                     ((86, 190, 6, 350), (0, 0, 255), 0.8),         # blue left border
@@ -3978,6 +4148,10 @@ MODAL_SIGNATURES = {
         'label': ((415, 312, 430, 40), ("priceyouentered", "notcorrect")),
     },
 }
+# The bet edit, nothing else said: its header, Choose Bet, Cancel Bet and the betslip's cream panel, no list on the left
+BET_EDIT_SIGNS = [_BETTY_CYAN_HEADER, _CHOOSE_BET_BUTTON, ((940, 634, 80, 110), (0, 128, 0), 0.5),
+                  ((880, 140, 470, 300), (255, 255, 208), 0.6)]
+BET_EDIT_NO_LIST = ((5, 5, 128, 200), (255, 255, 255), 0.9)
 RACE_ENTRY_TIME_BOX = ((400, 450, 80, 20), (255, 255, 128), 0.5)
 # Betty's broken edit state (seen after alt-tabbing back to A-Bet and editing a new bet): the slip image is missing,
 # its panel is plain cream, and "Special/Other Events Wager" is drawn over it. Back out and start again.
@@ -4033,6 +4207,11 @@ def _label_reads(img: Any, box: tuple, keywords: tuple) -> bool:
     return any(k in letters for k in keywords)
 
 
+def _bet_edit_or_unknown(arr: Any) -> str:
+    """No screen's signature fits: the bet edit with nothing on its left, or a screen the program doesn't know."""
+    return SCREEN_BET_EDIT_BLANK if _signals_pass(arr, [*BET_EDIT_SIGNS, BET_EDIT_NO_LIST]) else SCREEN_UNKNOWN
+
+
 def detect_screen(img: Any = None) -> str:
     """
     Which Betty screen is showing: one of the SCREEN_* names. `img` is a full 1366x768 screenshot (taken if omitted).
@@ -4052,10 +4231,10 @@ def detect_screen(img: Any = None) -> str:
     matches = [name for name, sig in SCREEN_SIGNATURES.items() if name != SCREEN_REUSE_PANEL
                and _signals_pass(arr, sig['colours']) and _signals_absent(arr, sig.get('absent', []))]
     if len(matches) != 1:
-        return SCREEN_UNKNOWN
+        return _bet_edit_or_unknown(arr)
     name = matches[0]
     if not _label_reads(img, *SCREEN_SIGNATURES[name]['label']):
-        return SCREEN_UNKNOWN
+        return _bet_edit_or_unknown(arr)
     if name == SCREEN_RACE_ENTRY:
         if _signals_pass(arr, [RACE_ENTRY_BROKEN_SLIP]) and _label_reads(img, *RACE_ENTRY_BROKEN_LABEL):
             return SCREEN_RACE_ENTRY_BROKEN
@@ -4390,7 +4569,10 @@ NAV_TIMEOUT = 4.0     # longest wait for Betty to change screen after one key pr
 # it up instead. Waiting the whole NAV_TIMEOUT before Tab cost every wager 4 s on the cashier till (1.2.17, 52 of 52)
 TIME_BOX_SLASH_SECS = 1.5
 _nav_recovering = False  # backing out after a stop: keys are allowed although the watcher is stopping
-_home_unreachable = False  # the last go_home() ended away from Home: the watcher stops instead of trying again
+_home_unreachable = False  # the last go_home() ended away from Home: the watcher tries again in HOME_RETRY_SECS
+HOME_RETRY_SECS = app_paths.setting("HOME_RETRY_SECS", 60.0)  # between tries to get back to Home; staff are told once
+UNKNOWN_READ_SECS = 600.0  # at most one paid look at a screen the program doesn't know, this often
+SAFE_WAY_OUT = ("cancel", "close", "ok", "back", "continue", "no", "exit")  # the only buttons clicked on an unknown screen
 ESC_UNCHANGED_LIMIT = 2  # Esc presses in a row that leave Betty on the same screen before go_home gives up
 
 
@@ -4459,7 +4641,7 @@ def expect_screen(targets: set, timeout: float = NAV_TIMEOUT, doing: str = "") -
     it recognises as a DIFFERENT one still stops it: Betty really is somewhere else.
     """
     screen = wait_for_screen(targets, timeout)
-    if screen == SCREEN_UNKNOWN:
+    if screen in SCREENS_NOT_SURE:
         print(f"[!] {doing or 'waiting'}: screen not recognised (expected {'/'.join(sorted(targets))}); carrying on.")
         return screen
     if screen not in targets:
@@ -4530,7 +4712,70 @@ MODAL_BACK_OUT = {  # (button, the pop-up's box)
     MODAL_PRICE: ("Cancel", (401, 289, 620, 340)),
     MODAL_LATE_SELECTION: ("No", (345, 291, 675, 250)),
     MODAL_EDITED_ELSEWHERE: ("Continue", (345, 291, 675, 250)),
+    MODAL_READ_FAILURE: ("Continue", (345, 291, 675, 250)),
 }
+
+
+_unknown_read_at = 0.0  # when an unknown screen was last read with the paid reader
+
+
+def save_unknown_screen() -> str | None:
+    """A picture of a screen the program doesn't know, in logs/ and so on the relay (a staff_ name), so it can be named."""
+    try:
+        path = os.path.join(app_paths.log_dir(), f"staff_UNKNOWN_{time.strftime('%Y%m%d_%H%M%S')}.png")
+        os.makedirs(app_paths.log_dir(), exist_ok=True)
+        pyautogui.screenshot().save(path)
+        print(f"[*] Screen the program doesn't know, saved for naming: {path}")
+        return path
+    except Exception as e:
+        print(f"[-] Could not save the unknown screen: {e}")
+        return None
+
+
+def click_way_out(img: Any, words: tuple[str, ...]) -> bool:
+    """Clicks the first button on screen reading one of `words` exactly, in that order. Never any other button."""
+    buttons = [(re.sub(r'[^a-z]', '', text.lower()), centre) for text, centre in read_buttons(img, (0, 0, 1366, 768))]
+    for word in words:
+        for text, centre in buttons:
+            if text == word:
+                print(f"[*] Unknown screen: clicking its '{word}' button.")
+                betty_click(*centre)
+                return True
+    return False
+
+
+def read_unknown_screen() -> bool:
+    """
+    Esc did nothing on a screen the program doesn't know (user, 6 Nov: it should read the screen and decide). Betty is
+    given the keyboard, then any plainly safe button is clicked; failing that the screen is read by the slip reader, at
+    most once per UNKNOWN_READ_SECS, for what it is and its way out, and only a safe button it names is clicked. Nothing
+    that could place, confirm or close anything is ever pressed. True when something was tried.
+    """
+    global _unknown_read_at
+    focus_betty()
+    img = pyautogui.screenshot()
+    if click_way_out(img, SAFE_WAY_OUT):
+        return True
+    if time.time() - _unknown_read_at < UNKNOWN_READ_SECS:
+        return False
+    _unknown_read_at = time.time()
+    buffered = io.BytesIO()
+    img.convert('RGB').save(buffered, format="JPEG", quality=80)
+    answer = _ask_vision_json(
+        f"""This is a Windows till running a betting shop program called Betty. The program driving it doesn't recognise
+this screen and wants to get back to Betty's home screen without changing anything.
+Say briefly what is showing, and which on-screen button leaves it safely. Only these count: {', '.join(SAFE_WAY_OUT)}.
+If none of them is on screen, or another program is covering Betty, leave "button" empty.
+Return JSON: {{"what": "...", "button": "..."}}""",
+        base64.b64encode(buffered.getvalue()).decode('utf-8'), "reader-chain",
+        {"type": "OBJECT", "properties": {"what": {"type": "STRING"}, "button": {"type": "STRING"}},
+         "required": ["what", "button"], "propertyOrdering": ["what", "button"]},
+        "Reading an unknown screen")
+    if not answer:
+        return False
+    word = re.sub(r'[^a-z]', '', str(answer.get('button') or '').lower())
+    print(f"[*] Unknown screen, as read: {answer.get('what')} (way out: {word or 'none'})")
+    return word in SAFE_WAY_OUT and click_way_out(pyautogui.screenshot(), (word,))
 
 
 def go_home(max_steps: int = 8) -> bool:
@@ -4544,10 +4789,17 @@ def go_home(max_steps: int = 8) -> bool:
     _nav_recovering = True
     try:
         unchanged = 0  # Esc presses in a row that left Betty on the same (recognised) screen
+        unknown_steps, saved = 0, False
         for _ in range(max_steps):
             screen = detect_screen()
             if screen == SCREEN_UNKNOWN:  # often Betty mid-redraw: let it settle before pressing anything
                 screen = wait_for_screen(ALL_SCREENS - {SCREEN_UNKNOWN}, timeout=1.5)
+            unknown_steps = unknown_steps + 1 if screen == SCREEN_UNKNOWN else 0
+            if unknown_steps == 2 and not saved:  # not a redraw: Esc went by and it's still here
+                saved = bool(save_unknown_screen())
+            if unknown_steps >= 3 and read_unknown_screen():
+                wait_for_screen(ALL_SCREENS - {SCREEN_UNKNOWN}, timeout=2.0)
+                continue
             if screen == SCREEN_HOME:
                 _home_unreachable = False
                 return True
@@ -4568,6 +4820,8 @@ def go_home(max_steps: int = 8) -> bool:
                     print(f"[*] Esc did nothing on {screen} twice: giving Betty the keyboard before one more.")
                     focus_betty()
                 print(f"[*] Backing out from {screen}: Esc")
+                if screen == SCREEN_MASTER_INDEX:  # with the search area focused Esc does nothing (user, 5 Nov)
+                    betty_click(*INDEX_ESC_SPOT)
                 betty_press('esc')
             after = wait_for_screen({s for s in ALL_SCREENS if s != screen}, timeout=2.0)
             stuck = after == screen and screen != SCREEN_UNKNOWN and screen not in MODAL_BACK_OUT
@@ -4668,7 +4922,7 @@ def open_race_entry() -> str:
             raise NavError(f"another terminal is editing the bet, and the pop-up's '{label}' wasn't found")
         betty_click(*spot)
         raise WagerOpenElsewhere("another terminal is editing it")
-    if screen in (SCREEN_EVENT_MENU, SCREEN_UNKNOWN):  # End always opens the event menu
+    if screen in (SCREEN_EVENT_MENU, *SCREENS_NOT_SURE):  # End always opens the event menu
         entry = {SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY_BROKEN}
         for attempt in range(1, 4):
             betty_press('1')
@@ -4685,7 +4939,7 @@ def open_race_entry() -> str:
         betty_press('/')  # '/' toggles the time box: pressed once, then checked
         screen = wait_for_screen({SCREEN_RACE_ENTRY_READY}, timeout=TIME_BOX_SLASH_SECS)
         box_open = _signals_pass(np.array(pyautogui.screenshot().convert('RGB')), [RACE_ENTRY_TIME_BOX])
-        if screen != SCREEN_RACE_ENTRY_READY and not (screen == SCREEN_UNKNOWN and box_open):
+        if screen != SCREEN_RACE_ENTRY_READY and not (screen in SCREENS_NOT_SURE and box_open):
             # Betty now and then shows something else where the time box should be; Tab brings the box up (user, 2 Nov)
             print(f"[*] Time box ('/'): Betty shows {screen}, not the time box; pressing Tab and checking again.")
             betty_press('tab')
@@ -4753,7 +5007,8 @@ def mark_wager_fao(number: str) -> str:
 
 ALL_SCREENS = {SCREEN_HOME, SCREEN_VIEW_WAGERS, SCREEN_EVENT_MENU, SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY,
                SCREEN_RACE_ENTRY_EXHAUSTED, SCREEN_RACE_ENTRY_BROKEN, SCREEN_RACE_LIST, SCREEN_REUSE_PANEL,
-               SCREEN_BET_AND_STAKE, SCREEN_UNKNOWN, *MODAL_SIGNATURES}
+               SCREEN_MASTER_INDEX,
+               SCREEN_BET_AND_STAKE, SCREEN_BET_EDIT_BLANK, SCREEN_UNKNOWN, *MODAL_SIGNATURES}
 
 
 # --- 6c. ENTERING A LOCKED WAGER INTO BETTY (test mode stops before F12) ---
@@ -4860,20 +5115,31 @@ def _ocr_bw(img: Any, box: tuple, config: str = '--psm 6', scale: int = 2, drop_
         return ""
 
 
-def _ocr_bw_many(img: Any, boxes: list, config: str = '--psm 6', scale: int = 2, drop_rules: bool = False) -> list[str]:
+def _grey_crop(img: Any, box: tuple, scale: int, drop_rules: bool = False) -> Any:
+    """A crop for small text on a colour (the Master Index's rows): grey and smoothly enlarged, not black and white.
+    Thresholded, the rows' cut-off letters read as other words ('Both Teams To Seo')."""
+    x, y, w, h = box
+    return img.convert('L').crop((x, y, x + w, y + h)).resize((w * scale, h * scale), Image.LANCZOS)
+
+
+def _ocr_bw_many(img: Any, boxes: list, config: str = '--psm 6', scale: int = 2, drop_rules: bool = False,
+                 crop: Any = _bw_crop) -> list[str]:
     """
     _ocr_bw on several boxes with one start of Tesseract: each crop a page of one run (a list of pictures). A start
     costs ~140 ms of the ~145 ms a small read takes (1 Nov), so the panel's 3 rows took 0.95 s as 6 reads. The text
-    is the same as one read per box: 151 of 151 crops (panel rows, every betslip row on the saved screens).
+    is the same as one read per box: 151 of 151 crops (panel rows, every betslip row on the saved screens). `crop`: how
+    a box is made ready for reading.
     """
-    if len(boxes) < 2:
+    if len(boxes) < 2 and crop is _bw_crop:
         return [_ocr_bw(img, b, config, scale, drop_rules) for b in boxes]
+    if not boxes:
+        return []
     folder = tempfile.mkdtemp(prefix="betty_ocr_")
     try:
         paths = []
         for i, box in enumerate(boxes):
             paths.append(os.path.join(folder, f"{i:03d}.png"))
-            _bw_crop(img, box, scale, drop_rules).save(paths[-1])
+            crop(img, box, scale, drop_rules).save(paths[-1])
         listing = os.path.join(folder, "pages.txt")
         with open(listing, "w", encoding="utf-8") as f:
             f.write("\n".join(paths) + "\n")
@@ -4934,6 +5200,9 @@ BETSLIP_SELECTION_LINE = re.compile(
     r'^\W*(\d+|\?)(?:\s*\.\s*|\s+)([A-Za-z\s]{3,7}?)\s+(\d{1,2}:\d{2})\s*(?:(?:(?:Trap\s*)?(\d+)\.\s*)|(?:Trap\s*(\d+)\s*))?(.*?)\s*[\W_]*(SP|NR|WD|VS|Evens|Evs|\d+\s*[-/]\s*\d+)(?:\s*[BE][PF])?[\W_]*$',
     re.IGNORECASE
 )
+# A long name in bold runs into the SP beside it, and its S reads as something else: 'Wordfromhome&P' (9.2467112). What's
+# left of the line can only be a price, and the name and SP are checked against the selection afterwards
+BETSLIP_SP_JOINED = re.compile(r'([a-z])[&$58%]P$')
 GUARANTEED_PURPLE = (128, 0, 128)  # a guaranteed (BOG) price is purple; an ordinary one red (255, 0, 0)
 # Price 'VS' = void selection: a late selection after "Yes" on Betty's late-selection box, drawn in black (9.2448544)
 VOID_SELECTION = 'VS'
@@ -5001,7 +5270,7 @@ def read_betslip_row(img: Any, row: int, arr: Any = None, left: int | None = Non
         x, y, w, h = box
         text = first if k == 0 and first is not None else _ocr_bw(
             img, (x + trim_x, y + trim_y, w - trim_x, h - trim_y), '--psm 7', scale, drop_rules=drop)
-        m = BETSLIP_SELECTION_LINE.match(text.strip())
+        m = BETSLIP_SELECTION_LINE.match(BETSLIP_SP_JOINED.sub(r'\1 SP', text.strip()))
         if m:
             break
     if not m:
@@ -5529,6 +5798,9 @@ def find_reuse_row(rows: list[dict], horse: dict, order: int | None = None, ente
         if horse.get('favourite'):
             if 'favourite' in shown:
                 return row
+        elif re.fullmatch(r'trap\s*\d+', str(row['name']).strip().lower()):  # a dog's row names its trap, never the dog
+            if int(re.sub(r'\D', '', row['name'])) == horse.get('number') and is_dog_race(horse):
+                return row
         elif len(shown) >= 3 and name_similarity(shown, _letters(horse.get('name'))[:len(shown)]) >= 0.75:
             return row
     if order is not None and entered is not None and len(rows) == entered and 0 <= order < len(rows) \
@@ -5828,20 +6100,6 @@ def _price_box_shows(open_: bool, timeout: float) -> bool:
         time.sleep(0.04)
 
 
-def _box_is_for_typed_price() -> bool:
-    """A price box whose line isn't known: is it asking about a price typed on this wager? Its Override button names
-    the price entered ('Override with entered price 14-1'). Read only when a price has been typed."""
-    if not _typed_prices:
-        return False
-    img = pyautogui.screenshot()
-    spot = find_button(img, "Override", MODAL_BACK_OUT[MODAL_PRICE][1])
-    if not spot:
-        return False
-    text = _ocr_bw(img, (spot[0] - 55, spot[1] - 36, 110, 72), '--psm 6', 3)
-    m = re.search(r'\d{1,3}\s*[-/]\s*\d{1,3}|\bevs\b|\bevens\b', text, re.I)  # find_button's text is letters only
-    return bool(m) and any(_price_value(typed) == _price_value(m.group(0)) for typed in _typed_prices.values())
-
-
 def _back_price_age(text: str) -> int | None:
     """
     How many seconds old a Back button says its price is ('Back 1 Price 9-2 3 secs old'). None unless it reads as
@@ -5887,27 +6145,12 @@ def _price_box_choice(img: Any) -> tuple[str, tuple[int, int]]:
     return "Override with entered price", override[0][2]
 
 
-def answer_price_box(typed: bool | None = False):
+def answer_price_box():
     """
-    Betty's price check box: Enter takes the price when struck. A box with no 'Price when struck' button ignores Enter
-    (user's screenshot 42, 30 Oct: the program backed out of it; 9.2467105, 5 Nov); then the button is chosen by
-    _price_box_choice and clicked, found by its text. Still open: staff.
-    `typed`: the box is about a line whose price was typed (take_written_price): Override at once, as Enter would swap
-    the customer's price for the price when struck. Betty opens this box every time such a line is touched, as when
-    guaranteeing it (user, 5 Nov). None: not known which line it's about, so its Override button says.
+    Betty's price check box, for every line alike (user, 6 Nov), a typed price too: Enter takes the price when struck. A
+    box with no 'Price when struck' button ignores Enter (user's screenshot 42, 30 Oct: the program backed out of it;
+    9.2467105, 5 Nov); then the button is chosen by _price_box_choice and clicked, found by its text. Still open: staff.
     """
-    if typed is None:
-        typed = _box_is_for_typed_price()
-    if typed:
-        spot = find_button(pyautogui.screenshot(), "Override", MODAL_BACK_OUT[MODAL_PRICE][1])
-        if not spot:
-            raise WagerForStaff("the price check box opened for a typed price, and its 'Override with entered price' "
-                                "button wasn't found")
-        print("[*] Price check box on a typed price: 'Override with entered price'.")
-        betty_click(*spot)
-        if not _price_box_shows(False, PRICE_BOX_CLOSE_SECS):
-            raise WagerForStaff("the price check box stayed open after 'Override with entered price'")
-        return
     print("[*] Price check box: taking the price when struck (Enter).")
     betty_press('enter')
     if _price_box_shows(False, PRICE_BOX_CLOSE_SECS):
@@ -5934,7 +6177,7 @@ def answer_price_box_after_f8():
         if wait_for_screen(targets) != MODAL_PRICE:
             return
         print("[*] F8: Betty's price check box opened.")
-        answer_price_box(None)
+        answer_price_box()
         if wait_for_screen(targets, F8_AFTER_BOX_SECS) in (SCREEN_RACE_LIST, SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY,
                                                            SCREEN_REUSE_PANEL):
             betty_press('f8')
@@ -5944,13 +6187,13 @@ POPUP_WAIT_SECS = 0.4        # how long a box is looked for after a step that ca
 POPUP_WAIT_AFTER_ADD = 0.1   # after adding a selection: the betslip read that follows answers a box opening later
 
 
-def answer_entry_popups(max_rounds: int = 3, wait: float = POPUP_WAIT_SECS, typed: bool | None = False):
-    """After adding a runner: the price box -> answer_price_box (`typed` as there); a late selection -> Yes (void
-    processing). `wait`: how long the first box is looked for."""
+def answer_entry_popups(max_rounds: int = 3, wait: float = POPUP_WAIT_SECS):
+    """After adding a runner: the price box -> answer_price_box; a late selection -> Yes (void processing). `wait`: how
+    long the first box is looked for."""
     for _ in range(max_rounds):
         screen = wait_for_screen(set(MODAL_SIGNATURES), timeout=wait)
         if screen == MODAL_PRICE:
-            answer_price_box(typed)
+            answer_price_box()
         elif screen == MODAL_LATE_SELECTION:
             spot = find_button(pyautogui.screenshot(), "Yes", MODAL_BACK_OUT[MODAL_LATE_SELECTION][1])
             if not spot:
@@ -6066,7 +6309,7 @@ def enter_favourite(horse: dict, already_on_slip: int):
     meeting, hhmm = horse.get('meeting', ''), str(horse.get('time', ''))
     label = f"The Favourite {clock_12h(hhmm)} {meeting}"
     refresh_watcher_hud(f"Entering selection {already_on_slip + 1}: {label} (through Betty's folder)...")
-    if detect_screen() not in (SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_UNKNOWN, SCREEN_REUSE_PANEL):
+    if detect_screen() not in (SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, *SCREENS_NOT_SURE, SCREEN_REUSE_PANEL):
         raise WagerForStaff(f"not on race entry to open Betty's folder for {label}")
     open_race_folder(horse.get('feed'))
     pick_in_folder_list(FOLDER_MEETING_ROW, FOLDER_MEETING_ROWS, FOLDER_MEETING_UP, FOLDER_MEETING_DOWN,
@@ -6195,13 +6438,13 @@ def _next_runner_list(prev_top: str | None, meeting: str, candidates: list[str],
         screen = detect_screen(shot)
         if screen == SCREEN_RACE_ENTRY_EXHAUSTED:
             return screen
-        if screen in (SCREEN_RACE_LIST, SCREEN_UNKNOWN):
+        if screen in (SCREEN_RACE_LIST, *SCREENS_NOT_SURE):
             sig = runner_list_signature(shot)
             if sig and sig != prev_sig:
                 return SCREEN_RACE_LIST
         if screen == SCREEN_RACE_LIST and not prev_sig and time.time() - t0 >= MEETING_REREAD_SECS:
             return screen  # nothing to compare with: as before, after a moment for Betty to redraw
-        if screen == SCREEN_UNKNOWN:
+        if screen in SCREENS_NOT_SURE:
             top = top_meeting_in_race_list(shot, candidates, prefer=meeting)
             if top and top != prev_top:
                 return SCREEN_RACE_LIST
@@ -6319,9 +6562,10 @@ Return JSON: {{"price": "...", "cut_off": true or false, "confidence": "high" or
 def take_written_price(horse: dict, got: dict, label: str) -> dict:
     """
     Betty has put a selection on at SP, but the customer took a price: the price on the betslip line is clicked, the
-    written price typed and Enter pressed; Betty's box counts it as an override, so 'Override with entered price' is
-    clicked. Keys go only once Betty's focus box is on the line: anywhere else a digit picks a runner from the list.
-    The line must then show that price. Returns the line. Anything else: staff, with nothing placed.
+    written price typed and Enter pressed. Betty's box is answered in the usual order (answer_price_box, user, 6 Nov): the
+    price when struck or a forward price if it offers one, otherwise 'Override with entered price', which keeps the price
+    typed. Keys go only once Betty's focus box is on the line: anywhere else a digit picks a runner from the list. The line
+    must then show a price. Returns the line. Anything else: staff, with nothing placed.
     A typed price is paid on as it stands, so it is read a second time first and typed only if that read agrees, is
     sure of every digit and sees nothing cut off: the first read took a 15/1 or 25/1 at the slip's edge for 5/1 and
     didn't mark it unclear (9.2466814, 5 Nov; the second read said cut off, the other 10 of 12 agreed and were sure).
@@ -6378,17 +6622,21 @@ def take_written_price(horse: dict, got: dict, label: str) -> dict:
     if not _price_box_shows(True, 0.05):
         betty_press('enter')
     if _price_box_shows(True, PRICE_TYPED_BOX_SECS):
-        answer_price_box(typed=True)
+        answer_price_box()
     want, t0 = _price_value(price), time.time()
     while True:
         _check_stop()
         shot = pyautogui.screenshot()
         if _signals_pass(np.array(shot.convert('RGB')), MODAL_SIGNATURES[MODAL_PRICE]['colours']):
-            answer_price_box(typed=True)
+            answer_price_box()
             continue
         line = read_betslip_row(shot, row)
-        if line and _price_value(line['price']) == want:
-            print(f"[+] {label}: {line['price']} typed from the slip and showing on the betslip.")
+        shown = _price_value(line['price']) if line else None
+        if shown is not None:
+            if shown == want:
+                print(f"[+] {label}: {line['price']} typed from the slip and showing on the betslip.")
+            else:
+                print(f"[+] {label}: Betty's price box gave {line['price']}, where {price} was written and typed.")
             _typed_prices[selection_key(horse)] = f"{want.numerator}-{want.denominator}"
             return dict(line, n=got.get('n') if line.get('n') is None else line['n'])
         if time.time() - t0 > NAV_TIMEOUT:
@@ -6397,7 +6645,8 @@ def take_written_price(horse: dict, got: dict, label: str) -> dict:
 
 
 def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = False, after_same_time: bool = False,
-                    entered_before: bool = False, entered_order: tuple[int, int] | None = None):
+                    entered_before: bool = False, entered_order: tuple[int, int] | None = None,
+                    next_horse: dict | None = None):
     """
     Adds one locked selection to the current betting slip and confirms it on the betslip read-back. After a selection
     in the same race (`after_same_race`), it is chosen from the runner list still showing, with no time typed again
@@ -6405,8 +6654,13 @@ def enter_selection(horse: dict, already_on_slip: int, after_same_race: bool = F
     at another meeting (`after_same_time`), the list still showing is that time's: 'right' on from it to the meeting
     (to-do, 30 Oct: the time was typed again for every selection). A meeting the list has already passed ends it, and
     the time is typed after all. A selection already entered on an earlier slip of this wager (`entered_before`) is
-    taken from the previous-selections panel (enter_from_reuse_panel), else entered the usual way.
+    taken from the previous-selections panel (enter_from_reuse_panel), else entered the usual way. A sports selection
+    goes through the Master Index (`next_horse`: the one after it, for typing ahead).
     """
+    if horse.get('sport'):
+        return enter_sports_selection(horse, already_on_slip, next_horse)
+    if _index_showing:  # a racing selection after a sports one
+        index_leave()
     order, n_entered = entered_order or (None, None)
     if entered_before and not horse.get('void') and enter_from_reuse_panel(horse, already_on_slip, order, n_entered):
         return None
@@ -6519,7 +6773,7 @@ def _type_race_time(img: Any, screen: str, hhmm: str) -> str:
     """'/' for the yellow time box when it isn't showing, the race time, and the runner list it brings up (or the end
     of the list when Betty has no race then)."""
     box_open = _signals_pass(np.array(img.convert('RGB')), [RACE_ENTRY_TIME_BOX])
-    if screen != SCREEN_RACE_ENTRY_READY and not (screen == SCREEN_UNKNOWN and box_open):
+    if screen != SCREEN_RACE_ENTRY_READY and not (screen in SCREENS_NOT_SURE and box_open):
         betty_press('/')  # '/' toggles: pressed only when the yellow time box is not already showing
     # The time follows '/' at once: Betty keeps keys pressed before it has drawn the box (user, 26 Oct)
     _type_text(format_time_for_betty(hhmm))
@@ -6652,7 +6906,7 @@ def _line_guaranteed(arr: Any, left: int, row: int) -> bool:
     return _colour_share(arr, (left + 250, top, 160, BETSLIP_LINE_H), GUARANTEED_PURPLE, 30) >= 0.02
 
 
-def _focus_down_to(n: int, at: tuple, known: dict[int, dict], typed: bool = False) -> tuple[dict, int] | None:
+def _focus_down_to(n: int, at: tuple, known: dict[int, dict]) -> tuple[dict, int] | None:
     """
     Down from the line just guaranteed (`at` = its number, its row, the lines hidden above) to selection `n`, the
     next. Which line has the focus is told by where Betty's focus box is, never by reading the line under it, which
@@ -6676,7 +6930,7 @@ def _focus_down_to(n: int, at: tuple, known: dict[int, dict], typed: bool = Fals
         img = pyautogui.screenshot()
         arr = np.array(img.convert('RGB'))
         if _signals_pass(arr, price_box):  # focusing a line can open its price box (user, 30 Oct)
-            answer_price_box(typed)
+            answer_price_box()
             continue
         now, now_hidden = betslip_focus_row(img), hidden
         if now is None or (now == row and row != bottom):  # not moved yet (mid-panel the box can't stay put)
@@ -6727,8 +6981,7 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
     t_all, at = time.time(), None  # at: (number, row, lines hidden above) of the line just guaranteed
     for i in wanted:
         n, name = i + 1, horses[i].get('name')
-        typed = selection_key(horses[i]) in _typed_prices  # its box must keep that price, never the price when struck
-        reached = _focus_down_to(n, at, known, typed) if at and at[0] == n - 1 else None
+        reached = _focus_down_to(n, at, known) if at and at[0] == n - 1 else None
         if reached:
             (line, hidden), how = reached, 'Down'
         else:
@@ -6743,7 +6996,7 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
                 betty_click(left + 60, line['y'])  # focus it (its "1. Meet 1:32" text, far from Remove)
                 # Focusing a selection opens its price box again (user, 30 Oct): answered before 'g', which it swallows
                 if _price_box_shows(True, PRICE_BOX_FOCUS_SECS):
-                    answer_price_box(typed)
+                    answer_price_box()
         if line['price'].upper() in NOT_RUNNING:
             print(f"[*] Best odds guaranteed: {name} shows {line['price']}: skipped, the next is clicked.")
             at = None
@@ -6757,20 +7010,20 @@ def apply_guarantees(horses: list[dict], struck_clock: str | None):
             _check_stop()
             arr = np.array(pyautogui.screenshot().convert('RGB'))
             if not answered and _signals_pass(arr, price_box):  # before the purple check: both can show at once
-                answer_price_box(typed)
+                answer_price_box()
                 answered = True
             elif _line_guaranteed(arr, left, line['row']):
                 print(f"[+] Best odds guaranteed: {name} ({how}, {time.time() - t0:.2f}s).")
                 break
             time.sleep(0.02)
         else:
-            answer_entry_popups(typed=typed)  # anything else in the way (e.g. late selection), answered by its label
+            answer_entry_popups()  # anything else in the way (e.g. late selection), answered by its label
             if not _line_guaranteed(np.array(pyautogui.screenshot().convert('RGB')), left, line['row']):
                 raise WagerForStaff(f"pressed g once on {name} but the guarantee can't be confirmed (not pressed again)")
         # Purple can show before a box opens (9.2446520, 22 Oct: a box left open after 'g' hid the betslip): a box
         # showing now is answered before the next line (one look, not a wait)
         if any(_signals_pass(np.array(pyautogui.screenshot().convert('RGB')), sig) for sig in boxes):
-            answer_entry_popups(typed=typed)
+            answer_entry_popups()
     scroll_betslip_to_end()  # back down, as Betty left it (user, 31 Oct)
     print(f"[+] Best odds guaranteed: {len(wanted)} selection(s) in {time.time() - t_all:.1f}s.")
 
@@ -6787,7 +7040,7 @@ def check_slip_before_f8(horses: list[dict], struck_clock: str | None):
         img = pyautogui.screenshot()
         arr = np.array(img.convert('RGB'))
         if any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values()):
-            answer_entry_popups(typed=None)  # which line it's about isn't known here
+            answer_entry_popups()
         lines = read_whole_betslip()
         fault = _slip_fault(lines, horses, struck_clock)
         if not fault:
@@ -7417,6 +7670,9 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
     _typed_prices.clear()
     bets_on_slip = 0
     entered: list[tuple] = []  # selections entered on this wager's earlier slips, in order (the previous-selections panel)
+    # Clicking a Master Index row on the previous-selections panel crashes Betty: with one on the wager, it isn't used
+    index_used = any(h.get('sport') for bet, _ in plan for h in bet.get('horses', []))
+    index_forget()
     for idx, (bet, canon) in enumerate(plan):
         assert canon is not None
         if not (idx and same_selections(bet, plan[idx - 1][0])):
@@ -7426,17 +7682,22 @@ def enter_wager(slip: list[dict], payment_pence: int, struck_clock: str | None =
                 key = selection_key(horse)
                 enter_selection(horse, k, after_same_race=after_race,
                                 after_same_time=k > 0 and not after_race and same_race_time(horse, horses[k - 1]),
-                                entered_before=key in entered,
-                                entered_order=(entered.index(key), len(entered)) if key in entered else None)
+                                entered_before=key in entered and not index_used,
+                                entered_order=(entered.index(key), len(entered)) if key in entered else None,
+                                **({'next_horse': horses[k + 1] if k + 1 < len(horses) else None}
+                                   if horse.get('sport') else {}))
             entered += [selection_key(h) for h in horses if selection_key(h) not in entered]
             apply_guarantees(bet.get('horses', []), struck_clock)
             # No whole-betslip re-read here (user, 26 Oct): every line was read back as it was entered and every
             # guarantee confirmed by its colour; the re-read failed on good slips (9.2452710). Payment is checked at F12.
-            answer_entry_popups(typed=None)  # which line it's about isn't known here
+            answer_entry_popups()
             bets_on_slip = 0
             _f8_trail[:] = ['f8']
             F8_RECORDER.start()
-            betty_press('f8')
+            if index_used and detect_screen() == SCREEN_MASTER_INDEX:  # the index takes no shortcuts (user): its button
+                betty_click(*INDEX_CHOOSE_BET_SPOT)
+            else:
+                betty_press('f8')
             answer_price_box_after_f8()
         expect_screen({SCREEN_BET_AND_STAKE}, doing="Choose Bet and Stake (F8)")
         refresh_watcher_hud(f"Bet {idx + 1}/{len(plan)}: {canon}, {bet.get('stake_pence')}p"
@@ -7661,6 +7922,68 @@ def alert_staff(message: str):
     notify(message, is_error=True, title=f"{APP_NAME} - Staff needed")
 
 
+def sports_on() -> bool:
+    """The Sports switch in the control window (System, Settings), read when asked: the switch changes it while running."""
+    return bool(app_paths.setting("SPORTS_ON", app_paths.setting("RAB_SPORTS", 0)))
+
+
+def sports_selection(horse: dict, slip_words: str, struck_at: float, records: list[dict], runners: list[dict]) -> dict | None:
+    """
+    A handwritten selection as a football match bet: a team in the table ('SPURS'), with no time, meeting or number written
+    and no runner of that name today. Found in Betty's feed files, so it's typed into the Master Index as the till names it
+    (Tottenham, never Spurs). None when it isn't one.
+    """
+    name = str(horse.get('name') or '').strip()
+    if (not name or selection_number(horse) is not None or horse.get('raw_meeting_hint') or horse.get('meeting')
+            or any(parse_race_time_to_minutes(str(horse.get(k) or ''))[0] is not None for k in ('raw_time', 'written_time', 'time'))):
+        return None
+    if any(clean_horse_name(r['name']) == clean_horse_name(name) for r in runners):
+        return None  # a horse of that name is running today: the name, not the table, decides
+    team = sports_names.team_for(name, slip_words)
+    if not team:
+        return None
+    sel = sports_names.match_bet(team, records, struck_at, horse.get('price'))
+    if not sel:
+        raise WagerForStaff(f"'{name}' is {team['name']}, but Betty has no match of theirs to bet on")
+    return sel
+
+
+def lock_sports_wager(scan: dict, details: dict) -> list[dict] | None:
+    """
+    A slip of football match bets, with the Sports switch on: each selection told from the team table and Betty's files,
+    as a Request A Bet's are, ready for the Master Index. None when it holds no team. Only a plain match bet is entered:
+    other markets, and a slip mixing racing with football, go to staff for now.
+    """
+    if not sports_on():
+        return None
+    reading = _last_reading or {}
+    slip_words = " ".join(str(t) for t in reading.get('lines') or [])
+    struck_at = time.mktime(time.strptime(f"{time.strftime('%Y-%m-%d')} {details['struck_time'][:5]}", "%Y-%m-%d %H:%M"))
+    records, runners = sports_card.records(), racecard_manager.get_runners()
+    locked: dict[int, dict] = {}
+    for bet in scan['slip_data']:
+        for horse in bet.get('horses', []):
+            sel = sports_selection(horse, slip_words, struck_at, records, runners)
+            if sel:
+                locked[id(horse)] = sel
+    total = sum(len(b.get('horses', [])) for b in scan['slip_data'])
+    if not locked:
+        return None
+    if len(locked) != total:
+        raise WagerForStaff("a slip mixing football with racing: the program enters all-football slips only, for now")
+    other = sports_names.other_market_words(slip_words)
+    if other:
+        raise WagerForStaff(f"a football bet with '{other}' written: the program enters plain match bets only, for now")
+    for bet in scan['slip_data']:
+        bet['horses'] = [dict(sel := locked[id(h)], sport=True, written=h.get('name'), name=sel['text'], meeting=sel['event'],
+                              time=sel['market'], number=sel['result'], category='sport', void=False, favourite=False,
+                              price=h.get('price'), no_bog=True) for h in bet['horses']]
+        for h in bet['horses']:
+            print(f"[+] Football: '{h['written']}' @ {h['price'] or 'no price'} = {h['event']} | {h['market']} | {h['result']} "
+                  f"(Betty's price {h.get('file_price') or 'none'}).")
+    return scan['slip_data']
+
+
 def lock_wager(number: str, details: dict) -> list[dict]:
     """
     On the race-entry screen: read the slip (reconciled to the Payment taken), then check every selection against
@@ -7670,7 +7993,7 @@ def lock_wager(number: str, details: dict) -> list[dict]:
     if not racecard_manager.get_runners():
         raise WagerForStaff("Betty's racecard feed can't be read, so no selection can be checked")
     screen = detect_screen()
-    if screen not in (SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY, SCREEN_UNKNOWN):  # scanned in the bet edit only
+    if screen not in (SCREEN_RACE_ENTRY_READY, SCREEN_RACE_ENTRY, *SCREENS_NOT_SURE):  # scanned in the bet edit only
         raise NavError(f"not at the race-entry time box before scanning (Betty shows {screen})")
     print(f"[*] Scanning wager {number} at the race-entry time box.")
     api_key = GEMINI_API_KEY or "reader-chain"
@@ -7679,6 +8002,12 @@ def lock_wager(number: str, details: dict) -> list[dict]:
     _check_stop()
     if not scan['ok']:
         raise WagerForStaff(scan['reason'] or "the slip could not be read")
+    football = lock_sports_wager(scan, details)
+    if football:
+        final = sum(calculate_bet_cost_pence(b) for b in football)
+        if final != pay:
+            raise WagerForStaff(f"the football bets cost £{final / 100:.2f} but £{pay / 100:.2f} was paid")
+        return football
     refresh_watcher_hud(f"Wager {number}: checking selections against Betty's card (struck {details['struck_time']})...")
     with staff_input_expected():  # staff answering a selection prompt must not switch the watcher off
         slip = state_pre_scan_and_match_slip(scan['slip_data'], raw_selections=scan['raw_selections'],
@@ -7984,9 +8313,27 @@ def leave_wager_for_staff(number: str, reason: str, screen: Any = None, earlier:
 _betty_hidden_reported = False  # "Betty isn't in front" printed once until she is again
 
 
+_queue_seen: dict[str, float] = {}  # wagers waiting now -> when the watcher first saw each
+_queue_said = ""
+
+
+def report_queue(numbers: list[str]):
+    """How many wagers are waiting and how long the oldest has been, for the control window."""
+    global _queue_seen, _queue_said
+    now = time.time()
+    _queue_seen = {n: _queue_seen.get(n, now) for n in numbers}
+    text = "None waiting"
+    if numbers:
+        oldest = min(_queue_seen.values())
+        text = f"{len(numbers)} waiting, the oldest seen {time.strftime('%H:%M', time.localtime(oldest))}"
+    if text != _queue_said:
+        _queue_said = text
+        backend_event("queue", text=text)
+
+
 def watcher_cycle():
     """One look: get to View Wagers, take the top wager not yet handled, or wait for the next poll."""
-    global _betty_hidden_reported
+    global _betty_hidden_reported, _home_lost_said
     if not betty_in_front():  # a key now would land in whatever window is in front (the launcher, say)
         if not _betty_hidden_reported:
             print("[*] Betty isn't in front (or isn't open): the watcher waits and presses nothing.")
@@ -8003,11 +8350,13 @@ def watcher_cycle():
         print(f"[*] Watcher found Betty on {screen}: backing out to Home first.")
         if not go_home():
             raise HomeUnreachable(f"could not get back to Home from {screen}")
+    _home_lost_said = False
     open_view_wagers()
     queue = read_unedited_queue(pyautogui.screenshot())
     now = time.time()
     todo = [(i, n) for i, n in enumerate(queue)
             if n not in _wagers_left_for_staff and _open_elsewhere_until.get(n, 0) <= now]
+    report_queue([n for _, n in todo])
     if todo:
         print(f"[*] Unedited list: {queue} (done or left for staff this session, not opened again: {sorted(_wagers_left_for_staff) or 'none'})")
     for row, number in todo:
@@ -8053,6 +8402,20 @@ def _go_home_from_handler() -> bool:
         return False
 
 
+_home_lost_said = False  # staff have been told Betty can't be got back to Home; cleared once she is
+
+
+def home_lost(reason: str):
+    """Home can't be reached (user, 6 Nov: the watcher never stops for this): staff told once, tried again in a minute."""
+    global _home_lost_said
+    print(f"[-] Watcher: {reason}. Trying again in {HOME_RETRY_SECS:.0f}s.")
+    STATUS_HUD.set_outcome(f"problem: {reason}")
+    if not _home_lost_said:
+        _home_lost_said = True
+        notify(f"{reason.capitalize()}. The program keeps trying; please check Betty.", is_error=True)
+    interruptible_sleep(HOME_RETRY_SECS)
+
+
 def watcher_loop():
     """While the watcher is on: work through unedited wagers (see watcher_cycle), recovering to Home on any trouble."""
     global watcher_busy, _watcher_stop_reason, _watcher_screen, _current_wager, _first_nav_failure
@@ -8086,8 +8449,7 @@ def watcher_loop():
                 print("[*] Watcher action stopped (Esc): backing out to Home.")
                 abort_event.clear()
                 if not _go_home_from_handler():
-                    watcher_on.clear()
-                    notify("Could not get Betty back to Home. Watcher off: please check Betty.", is_error=True)
+                    home_lost("could not get Betty back to Home")
             STATUS_HUD.set_outcome(f"stopped ({reason or 'Esc'}) {time.strftime('%H:%M')}")
         except PlacingRefused as e:
             print(f"[-] {e}")
@@ -8108,13 +8470,9 @@ def watcher_loop():
                     alert_staff(f"Wager {number} needs staff: {e}. Could NOT mark it FAO - please check Betty.")
                     STATUS_HUD.set_outcome(f"{number} -> staff: {e} {time.strftime('%H:%M')}")
             if _home_unreachable:  # backing out for the FAO failed: the next look would only press Esc again
-                watcher_on.clear()
-                notify("Could not get Betty back to Home. Watcher off: please check Betty.", is_error=True)
+                home_lost("could not get Betty back to Home")
         except HomeUnreachable as e:
-            print(f"[-] Watcher: {e}. Watcher off.")
-            STATUS_HUD.set_outcome(f"problem: {e}")
-            watcher_on.clear()
-            notify(f"Watcher stopped: {e}. Please check Betty.", is_error=True)
+            home_lost(str(e))
         except NavError as e:
             # The screen it went wrong on, before backing out: the staff screenshot was taken after the Esc presses,
             # so it showed Home (9.2462614 and five more, cashier till, 2 Nov)
@@ -8172,6 +8530,635 @@ def watcher_loop():
         refresh_watcher_hud()
 
 
+# --- 6e. THE MASTER INDEX: SPORTS SELECTIONS ---
+def _ocr_text_on(img: Any, box: tuple, background: tuple | None = None, scale: int = 2,
+                 config: str = '--psm 6') -> str:
+    """Text of any colour on a plain panel: every pixel far from the panel's colour black, the rest white. The panel's
+    colour is `background`, else the commonest colour in the box."""
+    x, y, w, h = box
+    arr = np.array(img.convert('RGB').crop((x, y, x + w, y + h))).astype(int)
+    if background is None:
+        colours, counts = np.unique(arr.reshape(-1, 3), axis=0, return_counts=True)
+        background = tuple(colours[counts.argmax()])
+    far = np.max(np.abs(arr - np.array(background)), axis=2) > 60
+    crop = Image.fromarray(np.where(far, 0, 255).astype('uint8')).resize((w * scale, h * scale))
+    try:
+        return pytesseract.image_to_string(crop, config=config).strip()
+    except Exception as e:
+        print(f"[-] OCR failed: {e}")
+        return ""
+
+
+# Betty's search across every folder, and how sports are entered (user, 5 Nov; scratch/betty_screens/mi_*). It's the
+# quickest way and the most finicky: a search can show nothing, "No selections found" for what exists, or one record
+# over and over (mi_5), so nothing on it is believed until it reads right, and every list is read again until it does.
+# Where the peach Master Index button is: a folder's screen (mi_1, mi_12); the picture menu a callover opens on
+INDEX_BUTTON_ZONES = ((20, 620, 70, 70), (5, 125, 65, 65))
+INDEX_BUTTON_PEACH = (255, 196, 136)
+INDEX_BOX = (16, 63, 296, 18)             # inside the search box's border: read as a letter, it took 'bournemo' for 'lbournemo'
+INDEX_CARET_MAX_PX = 25                   # dark pixels of the box's caret alone: a letter adds more
+INDEX_BOX_SPOT = (300, 71)                # clicked past the text, so the caret is at its end. Left of the letter
+#                                           buttons, so Esc stays harmless; works while Betty loads back, too (user)
+INDEX_ESC_SPOT = (700, 560)               # the slip's grey foot: clicked before Esc to back out. Not the beige: Remove is there
+INDEX_FOLDER_SPOT = (155, 660)            # the first folder button: leaves the index for that folder
+INDEX_CHOOSE_BET_SPOT = (582, 690)        # Choose Bet and Stake
+INDEX_NONE_BOX = (55, 192, 280, 28)       # "No selections found in search"
+INDEX_GRID_TOP = (170, 200)               # where the red line above the rows is (183 on mi_4-6)
+INDEX_GRID_BOX = (0, 170, 440, 450)       # the list and its arrow: two pictures the same = Betty has stopped drawing
+INDEX_ROW_PITCH = 35                      # 12 rows to a page, each with its border (the reuse panel's grid)
+INDEX_ROWS_MAX = 12
+INDEX_PRICE_SPOT_X = 355                  # a row is clicked on its price: its name would take SP
+INDEX_MORE_ZONE = (405, 560, 30, 40)      # the red arrow: the next 12 rows (user)
+INDEX_MORE_SPOT = (417, 579)
+INDEX_ROW_COLOURS = {'cyan': [(0, 255, 255), (128, 255, 255)], 'green': (0, 255, 64), 'white': (255, 255, 255)}
+INDEX_FILTERS = {  # a filter's button, what it should say, and what it says when left on another way (kept until Betty closes)
+    'time': ((405, 90, 76, 23), "anytime", "today"), 'live': ((405, 122, 76, 23), "preevent", "inplay"),
+    'kind': ((317, 154, 76, 23), "standard", "bdcms")}
+INDEX_ICONS = [(x, y) for y in (105, 155) for x in (25, 88, 152, 216, 280)]  # sport filters; on: a pale blue aura (mi_10)
+INDEX_ICON_HALF = (30, 24)
+INDEX_AURA_MIN_PX = 150                   # an aura's pixels round an icon; none of them has that many of itself
+INDEX_OPEN_SECS = app_paths.setting("INDEX_OPEN_SECS", 8.0)    # the index can take several seconds to load (user)
+INDEX_LIST_SECS = app_paths.setting("INDEX_LIST_SECS", 8.0)    # a search gets this long to show before it is asked again:
+#                                                                3 s for 'bournemo', 5 s with a ';' on the manager till (5 Nov)
+INDEX_BOX_SECS = 6.0                      # a key to show in the box: Betty searches on each key, and is slow while she does
+INDEX_PAGE_SECS = 3.0                     # the next page to replace the last
+INDEX_PAGES_MAX = 20
+INDEX_ADD_SECS = app_paths.setting("INDEX_ADD_SECS", 12.0)     # a click to its line on the slip: 2.2 s usually, 6.2 s seen
+INDEX_REVISITS = 2                        # times the index is left and opened again for one selection
+INDEX_TYPE_AHEAD = app_paths.setting("INDEX_TYPE_AHEAD", 0)    # 1: type the next search while Betty loads back (user: it buffers)
+_index_typed = ""                         # what the program last typed in the box
+_index_filters_checked = False            # since the index was opened
+_index_showing = False                    # this program opened the index and hasn't left it
+_index_no_row_clicks = False              # the probe: no row may be clicked at all
+sports_card = SportsCard()
+
+
+class IndexStuck(WagerForStaff):
+    """The index wouldn't show a selection however it was asked, or the slip didn't take it. A shop's wager goes to
+    staff; a Request A Bet is come back to, since the website only offers what's in Betty (user, 5 Nov)."""
+
+
+def sports_records_by_key() -> dict:
+    """Betty's sports records by what a line reads as. Files can hold one twice: the first is kept."""
+    out: dict = {}
+    for r in sports_card.records():
+        out.setdefault(mi.record_key(r['event'], r['market'], r['result']), r)
+    return out
+
+
+def _index_cell_ink(arr: Any, box: tuple) -> bool:
+    x, y, w, h = box
+    return int((arr[y:y + h, x:x + w, :3].astype(int).sum(axis=2) < 200).sum()) >= 8
+
+
+def _index_row_colour(arr: Any, box: tuple) -> str | None:
+    for name, rgb in INDEX_ROW_COLOURS.items():
+        if _colour_share(arr, box, rgb, 30) >= 0.5:
+            return name
+    # A racing row with no prices in yet is hatched, as on the runner list
+    if _colour_share(arr, box, (64, 255, 255), 70) >= 0.2 and _colour_share(arr, box, (255, 255, 255), 30) >= 0.1:
+        return 'hatched'
+    return None
+
+
+def _index_price_ink(arr: Any, box: tuple) -> list[str]:
+    x, y, w, h = box
+    dark = arr[y:y + h, x:x + w, :3].astype(int).sum(axis=2) < 200
+    return ["".join('#' if v else '.' for v in row) for row in dark]
+
+
+def _index_read_price(img: Any, arr: Any, box: tuple) -> tuple[str, bool]:
+    """A price cell as (text, sure): by exact shape, else by Tesseract (not sure: Betty's green top row is bold, and
+    its '-' can touch the next digit)."""
+    shapes = mi.read_price_shapes(_index_price_ink(arr, box))
+    if shapes:
+        return shapes, True
+    text = re.sub(r'\s', '', _ocr_box(img, box, '--psm 7')).replace('—', '-').replace('–', '-')
+    return text, False
+
+
+def read_search_box(img: Any) -> str:
+    """The search box's text, '' when only its caret is there (read alone, the caret came back as letters)."""
+    x, y, w, h = INDEX_BOX
+    dark = int((np.array(img.convert('L').crop((x, y, x + w, y + h))) < 128).sum())
+    if dark <= INDEX_CARET_MAX_PX:
+        return ""
+    return " ".join(_ocr_text_on(img, INDEX_BOX, (255, 255, 255), scale=3, config='--psm 7').split())
+
+
+def read_index(img: Any = None) -> dict:
+    """
+    The index as it shows now. {'state': 'blank' (no list), 'none' ("No selections found"), 'drawing' (part of a list)
+    or 'list'; 'search': the box as read; 'more': the red arrow shows; 'rows': [{'row', 'y', 'event', 'market', 'result',
+    'price', 'price_sure', 'colour', 'usable'}]}. A row is usable unless it's white (Betty's repeating list), hatched or
+    has no price, NO or NR: the wager takes the price when struck, so a misread price doesn't rule a row out.
+    """
+    img = (pyautogui.screenshot() if img is None else img).convert('RGB')
+    arr = np.array(img)
+    out = {'state': 'blank', 'search': read_search_box(img), 'rows': [],
+           'more': _colour_share(arr, INDEX_MORE_ZONE, (220, 30, 30), 70) >= 0.08}
+    red = (arr[:, :, 0] > 200) & (arr[:, :, 1] < 70) & (arr[:, :, 2] < 70)
+    share = red[:, REUSE_PANEL_COLS[0]:REUSE_PANEL_COLS[3]].mean(axis=1)
+    lines = [y for y in range(INDEX_GRID_TOP[0], 620) if share[y] >= 0.6]
+    tops = [y for y in lines if y <= INDEX_GRID_TOP[1]]
+    if not tops:
+        if _index_cell_ink(arr, INDEX_NONE_BOX) and 'noselections' in _letters(_ocr_box(img, INDEX_NONE_BOX, '--psm 7')):
+            out['state'] = 'none'
+        return out
+    top = tops[0]
+    below = [y for y in lines if y > top + 3]
+    n = round((below[0] - top - 1) / INDEX_ROW_PITCH) if below else 0
+    if not 1 <= n <= INDEX_ROWS_MAX:
+        out['state'] = 'drawing'
+        return out
+    boxes = []
+    for r in range(n):
+        y = top + 1 + r * INDEX_ROW_PITCH
+        cells = ((7, y, 128, 34), (139, y, 170, 34), (314, y + 2, 83, 31))
+        colours = {_index_row_colour(arr, c) for c in cells}
+        if len(colours) != 1 or None in colours or not all(_index_cell_ink(arr, c) for c in cells[:2]):
+            out['state'] = 'drawing'  # a price cell can be empty: a racing row with no price yet
+            return out
+        boxes.append((r, y, cells, colours.pop()))
+    lefts = _ocr_bw_many(img, [b[2][0] for b in boxes], '--psm 6', 4, crop=_grey_crop)
+    results = _ocr_bw_many(img, [b[2][1] for b in boxes], '--psm 7', 3, crop=_grey_crop)
+    for (r, y, cells, colour), left, result in zip(boxes, lefts, results):
+        lines_left = [ln.strip() for ln in left.splitlines() if ln.strip()]
+        price, sure = _index_read_price(img, arr, cells[2]) if _index_cell_ink(arr, cells[2]) else ('', True)
+        out['rows'].append({'row': r, 'y': y + INDEX_ROW_PITCH // 2, 'event': lines_left[0] if lines_left else '',
+                            'market': " ".join(lines_left[1:]), 'result': result.strip(), 'price': price,
+                            'price_sure': sure, 'colour': colour,
+                            'usable': colour not in ('white', 'hatched') and bool(price)
+                            and _letters(price) not in ('no', 'nr')})
+    out['state'] = 'list'
+    return out
+
+
+def index_filter_labels(img: Any) -> dict:
+    """What each filter's button says, letters only ('' when it isn't showing: Standard isn't always there)."""
+    arr = np.array(img.convert('RGB'))
+    return {name: (_letters(_ocr_box(img, box, '--psm 7')) if _colour_share(arr, box, BETSLIP_CREAM, 30) >= 0.3 else '')
+            for name, (box, _, _) in INDEX_FILTERS.items()}
+
+
+def index_sport_filters_on(img: Any) -> list[tuple[int, int]]:
+    """The sport icons with a pale blue aura: only that sport is being searched."""
+    arr = np.array(img.convert('RGB')).astype(int)
+    on = []
+    for x, y in INDEX_ICONS:
+        cut = arr[y - INDEX_ICON_HALF[1]:y + INDEX_ICON_HALF[1], x - INDEX_ICON_HALF[0]:x + INDEX_ICON_HALF[0]]
+        pale = (cut[:, :, 0] > 120) & (cut[:, :, 0] < 235) & (cut[:, :, 1] > 240) & (cut[:, :, 2] > 240)
+        if int(pale.sum()) >= INDEX_AURA_MIN_PX:
+            on.append((x, y))
+    return on
+
+
+def index_check_filters():
+    """
+    A filter stays on until Betty closes (user, 5 Nov), and would hide a selection from every search, so each one left
+    on is put back: Anytime, Pre-event, Standard, no sport. Read again after each click; one that won't go is said in
+    the log and the search goes on.
+    """
+    img = pyautogui.screenshot()
+    for spot in index_sport_filters_on(img):
+        print(f"[*] Master Index: a sport filter is on at {spot}: clicking it off.")
+        betty_click(*spot)
+        time.sleep(0.3)
+    labels = index_filter_labels(img)
+    for name, (box, wanted, other) in INDEX_FILTERS.items():
+        if other not in labels[name]:
+            continue
+        print(f"[*] Master Index: the {name} filter says '{labels[name]}': clicking it to '{wanted}'.")
+        betty_click(box[0] + box[2] // 2, box[1] + box[3] // 2)
+        time.sleep(0.3)
+        if wanted not in index_filter_labels(pyautogui.screenshot())[name]:
+            print(f"[!] Master Index: the {name} filter didn't go to '{wanted}'.")
+
+
+def _find_index_button(img: Any) -> tuple[int, int] | None:
+    """The centre of the peach Master Index button, by its colour."""
+    for x, y, w, h in INDEX_BUTTON_ZONES:
+        a = np.array(img.convert('RGB').crop((x, y, x + w, y + h))).astype(int)
+        ys, xs = np.nonzero(np.max(np.abs(a - np.array(INDEX_BUTTON_PEACH)), axis=2) <= 40)
+        if len(xs) >= 200:
+            return x + int(xs.mean()), y + int(ys.mean())
+    return None
+
+
+def index_open():
+    """To the Master Index from a folder's screen: its button (Betty has been seen ignoring keys, 2 Nov), else '#'."""
+    global _index_typed, _index_filters_checked, _index_showing
+    img = pyautogui.screenshot()
+    screen = detect_screen(img)
+    if screen == SCREEN_MASTER_INDEX:
+        _index_showing = True
+        return
+    if screen not in (SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY, SCREEN_RACE_LIST, SCREEN_UNKNOWN):
+        raise NavError(f"open the Master Index: Betty shows {screen}")
+    spot = _find_index_button(img)
+    if spot:
+        betty_click(*spot)
+    else:
+        print("[*] The Master Index button wasn't found: pressing '#'.")
+        betty_press('#')
+    t0 = time.time()
+    while True:
+        screen = wait_for_screen({SCREEN_MASTER_INDEX, MODAL_READ_FAILURE}, timeout=max(0.5, INDEX_OPEN_SECS - (time.time() - t0)))
+        if screen == SCREEN_MASTER_INDEX:
+            break
+        if not index_clear_read_failure() and time.time() - t0 >= INDEX_OPEN_SECS:
+            raise IndexStuck("the Master Index didn't open")
+    _index_typed, _index_filters_checked, _index_showing = "", False, True
+
+
+def index_leave():
+    """Out of the index by a folder button. '#' only opens it, and Esc from anywhere but the search area backs out of
+    the wager (user, 5 Nov)."""
+    global _index_showing
+    _index_showing = False
+    betty_click(*INDEX_FOLDER_SPOT)
+    screen = wait_for_screen({SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY}, timeout=INDEX_OPEN_SECS)
+    if screen not in (SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY):
+        raise IndexStuck(f"a folder button didn't leave the Master Index (Betty shows {screen})")
+
+
+def index_forget():
+    """A new wager: the index isn't up, as far as the program knows."""
+    global _index_showing
+    _index_showing = False
+
+
+def index_clear_read_failure(img: Any = None) -> bool:
+    """Betty's red box when she reads a feed file as it's being rewritten ("Failure to Read Complete Data", mi_16): nothing
+    goes on until its Continue is clicked. True when one was closed. Colours first: this is asked on every look at the list."""
+    img = pyautogui.screenshot() if img is None else img
+    if not _signals_pass(np.array(img.convert('RGB')), MODAL_SIGNATURES[MODAL_READ_FAILURE]['colours']):
+        return False
+    if detect_screen(img) != MODAL_READ_FAILURE:
+        return False
+    spot = find_button(img, "Continue", MODAL_BACK_OUT[MODAL_READ_FAILURE][1])
+    if not spot:
+        raise IndexStuck("Betty's 'Failure to Read Complete Data' box is up, and its Continue wasn't found")
+    print("[*] Master Index: Betty's 'Failure to Read Complete Data' box: Continue.")
+    betty_click(*spot)
+    time.sleep(0.2)
+    return True
+
+
+def _index_key(key: str):
+    """A key for the search box, '.' included ('over 2.5'): only ever after the box has been clicked. betty_press refuses
+    '.' for the rest of the bet edit, where it does something else."""
+    _check_stop()
+    _send_key(key)
+
+
+def index_type_search(wording: str, afresh: bool = False, pace: float = 0.0) -> bool:
+    """
+    `wording` in the box, keeping what's already right ('over 2.5; ' between selections, as the user does), and all in one
+    go. Betty starts a search on a key: with a pause after the first letter (a search of everything holding 'b'), what
+    exists came back "No selections found" (manager till, 5 Nov: 1 good of 9; typed in one go, 12 of 12). A letter away from
+    the box can act on the bet edit (v adds a void selection), so first: Betty has the keyboard, the index is showing, the
+    box is clicked. Read back after. False when it doesn't say what was typed.
+    """
+    global _index_typed
+    if not betty_in_front():
+        print("[!] Master Index: Betty hasn't got the keyboard: nothing typed.")
+        return False
+    betty_click(*INDEX_BOX_SPOT)
+    shot = pyautogui.screenshot()
+    if index_clear_read_failure(shot):
+        betty_click(*INDEX_BOX_SPOT)
+        shot = pyautogui.screenshot()
+    if not _signals_pass(np.array(shot.convert('RGB')), SCREEN_SIGNATURES[SCREEN_MASTER_INDEX]['colours']):
+        print("[!] Master Index: it isn't showing: nothing typed.")
+        _index_typed = ""
+        return False
+    shown = read_search_box(shot)
+    known = _index_typed if (_index_typed and not afresh and mi.search_box_reads(shown, _index_typed)) else None
+    keep = mi.common_start(known, wording) if known is not None else 0
+    erase = (len(known) - keep) if known is not None else len(shown) + 2 if shown else 0
+    for key in ['backspace'] * erase + list(wording[keep:]):
+        _index_key(key)
+        if pace:
+            time.sleep(pace)
+    _index_typed = wording
+    t0 = time.time()
+    while True:
+        shot = pyautogui.screenshot()
+        if index_clear_read_failure(shot):
+            _index_typed = ""
+            return False if afresh else index_type_search(wording, afresh=True, pace=pace)
+        if mi.search_box_reads(read_search_box(shot), wording):
+            return True
+        if time.time() - t0 > INDEX_BOX_SECS:
+            print(f"[!] Master Index: the search box doesn't show '{wording}' after typing.")
+            _index_typed = ""
+            return False
+        time.sleep(0.05)
+
+
+def index_wait_list(wording: str, timeout: float | None = None) -> dict:
+    """
+    What the search shows once Betty has stopped drawing, up to `timeout`. 'verdict' on top of read_index: 'good' (the
+    list holds what was typed, and the box says it), 'stale', 'ghost', 'none', 'blank', 'drawing', 'box' (the box says
+    something else) or 'failure' (Betty's read-failure box, now closed). Returned at once when good; otherwise the last
+    read, at the end of the wait.
+    """
+    timeout = INDEX_LIST_SECS if timeout is None else timeout
+    t0, last, read = time.time(), None, None
+    x, y, w, h = INDEX_GRID_BOX
+    while True:
+        _check_stop()
+        img = pyautogui.screenshot()
+        if index_clear_read_failure(img):
+            return {'verdict': 'failure', 'rows': [], 'more': False}
+        grid = np.array(img.convert('RGB').crop((x, y, x + w, y + h)))
+        if last is not None and np.array_equal(grid, last):
+            read = read_index(img)
+            read['grid'] = grid
+            read['verdict'] = mi.classify_list(read['rows'], wording) if read['state'] == 'list' else read['state']
+            if not mi.search_box_reads(read['search'], wording):
+                read['verdict'] = 'box'
+            if read['verdict'] == 'good':
+                corpus_save("index_list", img, {'search': wording}, {'rows': read['rows']})
+                return read
+        last = grid
+        if time.time() - t0 >= timeout:
+            if read is None:
+                read = dict(read_index(img), grid=grid, verdict='drawing')
+            return read
+        time.sleep(0.08)
+
+
+def index_search(wording: str, nudge: bool = True) -> dict:
+    """The search asked, then again the ways the user does when Betty bugs out (5 Nov): wait, delete a letter and put it
+    back, then delete it all and type it again. The read of the list; its 'verdict' says whether it can be believed."""
+    if not index_type_search(wording):
+        return {'verdict': 'box', 'rows': [], 'more': False}
+    read = index_wait_list(wording)
+    if read['verdict'] == 'good' or not nudge:
+        return read
+    print(f"[*] Master Index: '{wording}' shows {read['verdict']}: deleting a letter and putting it back.")
+    betty_click(*INDEX_BOX_SPOT)
+    _index_key('backspace')
+    _index_key(wording[-1])
+    read = index_wait_list(wording)
+    if read['verdict'] == 'good':
+        return read
+    print(f"[*] Master Index: '{wording}' still shows {read['verdict']}: typing it all again.")
+    if not index_type_search(wording, afresh=True):
+        return {'verdict': 'box', 'rows': [], 'more': False}
+    return index_wait_list(wording)
+
+
+def _index_next_page(read: dict, wording: str) -> dict | None:
+    """The red arrow, and the next page's read; None when no other page came."""
+    betty_click(*INDEX_MORE_SPOT)
+    t0 = time.time()
+    x, y, w, h = INDEX_GRID_BOX
+    while time.time() - t0 < INDEX_PAGE_SECS:
+        _check_stop()
+        grid = np.array(pyautogui.screenshot().convert('RGB').crop((x, y, x + w, y + h)))
+        if not np.array_equal(grid, read['grid']):
+            page = index_wait_list(wording)
+            return page if page['verdict'] == 'good' else None
+        time.sleep(0.05)
+    return None
+
+
+def _same_rows(a: list[dict], b: list[dict]) -> bool:
+    key = lambda rows: [(r['event'], r['market'], r['result'], r['price']) for r in rows]
+    return key(a) == key(b)
+
+
+def index_page_to_row(read: dict, wording: str, sel: dict) -> tuple[dict | None, dict]:
+    """
+    The red arrow until the row shows: (the row or None, the page it's on, ready to click). A row that fits but whose
+    market may be cut off, not at the requested price, could be the wrong one of two ('Both Teams To Scor'), so the pages
+    after it are looked at too, and the search asked again to get back to it. Rows that can't be told apart go to staff.
+    """
+    seen_rows, fits, pages = [read['rows']], [], 1
+    while True:
+        choice = mi.choose_row(read['rows'], sel)
+        if choice['fits'] and not choice['row']:
+            raise WagerForStaff(f"the Master Index shows {choice['why']}: {sel.get('text')}")
+        row = choice['row']
+        if row and not fits and (mi.same_price(row['price'], sel.get('price')) or not mi.market_may_be_cut(row)):
+            return row, read
+        if row:
+            fits.append((pages, row))
+        if not read['more'] or pages >= INDEX_PAGES_MAX:
+            break
+        page = _index_next_page(read, wording)
+        if page is None or any(_same_rows(page['rows'], rows) for rows in seen_rows):
+            break
+        read, pages = page, pages + 1
+        seen_rows.append(read['rows'])
+    if not fits:
+        return None, read
+    choice = mi.choose_row([r for _, r in fits], sel)
+    if not choice['row']:
+        raise WagerForStaff(f"the Master Index shows {choice['why']}: {sel.get('text')}")
+    on_page = next(p for p, r in fits if r is choice['row'])
+    if on_page == pages:
+        return choice['row'], read
+    read = index_search(wording)  # back to the first page, then on to its page
+    for _ in range(on_page - 1):
+        read = _index_next_page(read, wording) if read['verdict'] == 'good' else None
+        if read is None:
+            return None, {'rows': [], 'more': False}
+    return mi.choose_row(read['rows'], sel)['row'], read
+
+
+def index_find_row(sel: dict) -> tuple[dict, dict]:
+    """
+    The selection's row, however many ways it takes (user, 5 Nov): each wording in turn, the first asked again as
+    index_search does, then out of the index by a folder button and in again. (row, the read it's on). IndexStuck when
+    it never shows: for a Request A Bet, the program comes back to it a minute or two later.
+    """
+    global _index_filters_checked
+    why = ""
+    for visit in range(INDEX_REVISITS + 1):
+        if visit:
+            print(f"[*] Master Index: not found ({why}): leaving by a folder and coming back ({visit}/{INDEX_REVISITS}).")
+            index_leave()
+            index_open()
+        if visit or not _index_filters_checked:
+            index_check_filters()
+            _index_filters_checked = True
+        for k, wording in enumerate(mi.search_wordings(sel)):
+            read = index_search(wording, nudge=k == 0)
+            if read['verdict'] != 'good':
+                why = f"'{wording}' shows {read['verdict']}"
+                continue
+            row, page = index_page_to_row(read, wording, sel)
+            if row:
+                return row, page
+            why = f"no row fits on {'the list' if not read['more'] else 'any page'} for '{wording}'"
+    raise IndexStuck(f"the Master Index didn't show {sel.get('text')}: {why}")
+
+
+SPORT_LINE_FIRST = re.compile(r'^\W*(\d+)\s*[.,:]?\s*(.*)$')
+SPORT_LINE_SECOND = re.compile(r'^(.*?)[\s\W]+(\d+\s*-\s*\d+|evens|evs|sp|nr)\W*(?:[BE][PF]|SP)?\W*$', re.IGNORECASE)
+
+
+def read_sports_slip_line(img: Any) -> dict | None:
+    """The betslip's last line as a sports one: {'n', 'first': event and market, 'result', 'price'}. Two rows of text in a
+    line's place: '1. AGF Aarhus v Br  Goals Over Unde', 'Over 2.5     19-20 BP'. None while Betty is drawing it."""
+    rows = betslip_rows_with_text(img)
+    left = betslip_left(img)
+    for row in rows[-1:-3:-1]:  # the one above when the last doesn't read as a line: Betty still drawing it
+        x, y, w, h = _betslip_row_box(left, row)
+        first, second = _ocr_bw_many(img, [(x, y, w, h), (x, y + h, w, h)], '--psm 7', 3, True)
+        a, b = SPORT_LINE_FIRST.match(first.strip()), SPORT_LINE_SECOND.match(second.strip())
+        if a and b:
+            return {'n': int(a.group(1)), 'row': row, 'first': a.group(2), 'result': b.group(1).strip(),
+                    'price': re.sub(r'\s', '', b.group(2))}
+    return None
+
+
+def index_confirm_line(already_on_slip: int, row: dict) -> dict:
+    """
+    After a row is clicked: Betty's boxes answered as for any selection (the price box takes the price when struck), then
+    the slip's new line must be that row, and one more than before. Anything else stops the wager: a line added wrongly
+    must never be placed.
+    """
+    t0, line = time.time(), None
+    answer_entry_popups(wait=POPUP_WAIT_AFTER_ADD)
+    while time.time() - t0 < INDEX_ADD_SECS:
+        _check_stop()
+        img = pyautogui.screenshot()
+        arr = np.array(img.convert('RGB'))
+        if any(_signals_pass(arr, sig['colours']) for sig in MODAL_SIGNATURES.values()):
+            answer_entry_popups()
+            continue
+        line = read_sports_slip_line(img)
+        if line and line['n'] == already_on_slip + 1 and mi.slip_line_fits(line, row):
+            return line
+        time.sleep(0.15)
+    raise IndexStuck(f"after clicking {row['event']} {row['market']} {row['result']}, the slip's last line reads {line}, "
+                     f"not selection {already_on_slip + 1}")
+
+
+def enter_sports_selection(horse: dict, already_on_slip: int, next_horse: dict | None = None):
+    """One locked sports selection: the index opened, its row found and clicked on the price, its line checked."""
+    global _index_typed
+    if _index_no_row_clicks:
+        raise PlacingRefused("the probe doesn't click rows")
+    refresh_watcher_hud(f"Master Index, selection {already_on_slip + 1}: {horse.get('text')}...")
+    index_open()
+    row, read = index_find_row(horse)
+    x, y, w, h = INDEX_GRID_BOX
+    if not np.array_equal(np.array(pyautogui.screenshot().convert('RGB').crop((x, y, x + w, y + h))), read['grid']):
+        print("[*] Master Index: the list changed just before the click: reading it again.")
+        row, read = index_find_row(horse)
+    print(f"[*] Master Index: row {row['row'] + 1}: {row['event']} | {row['market']} | {row['result']} | {row['price']} "
+          f"(wanted {horse.get('price')}).")
+    betty_click(INDEX_PRICE_SPOT_X, row['y'])
+    if (INDEX_TYPE_AHEAD and next_horse and next_horse.get('sport')
+            and mi.same_price(row['price'], horse.get('rab_price') or horse.get('price'))):
+        # Same price, so no price box to catch the letters. Typed into the place the box will be (user, 5 Nov: it buffers)
+        ahead = mi.search_wordings(next_horse)[0]
+        keep = mi.common_start(_index_typed, ahead)
+        betty_click(*INDEX_BOX_SPOT)
+        for key in ['backspace'] * (len(_index_typed) - keep) + list(ahead[keep:]):
+            _index_key(key)
+        _index_typed = ahead
+    line = index_confirm_line(already_on_slip, row)
+    print(f"[+] Selection {already_on_slip + 1} on the slip: {line['first']} | {line['result']} at {line['price']}.")
+
+
+def _probe_betty_in_front() -> bool:
+    """Betty has the keyboard, or the probe presses nothing. Windows only lets a program that has just had input bring a
+    window forward, so Alt is tapped first (nothing else on Betty takes it). A key must never land on another window."""
+    user32 = ctypes.windll.user32
+    for _ in range(5):
+        hwnd = betty_top_window()
+        if hwnd and hwnd == user32.GetForegroundWindow():
+            return True
+        user32.keybd_event(0x12, 0, 0, 0)
+        user32.keybd_event(0x12, 0, 0x2, 0)
+        focus_betty()
+        time.sleep(0.3)
+    return False
+
+
+def index_probe(items: list[str], adding: bool = False):
+    """
+    Testing only, with staff at the till, and never in the watcher: python betty_companion.py --index-probe "over 2.5;
+    monaco" "yes; bournemout". From Home it opens an empty bet by Accept Cash Wager (a callover: finishing one places a
+    real bet, user, 5 Nov), runs each search at three typing speeds and saves every frame to logs\\index_probe_<time>, then
+    backs out. No row is clicked, and neither Choose Bet nor F12 is ever pressed. --index-try "<event market result @
+    price>" also clicks each selection's row and checks its line, and backs out just the same. Touching the mouse or
+    keyboard stops it.
+    """
+    global _index_no_row_clicks
+    _index_no_row_clicks = not adding
+    test_mode_on.set()
+    folder = os.path.join(app_paths.log_dir(), f"index_probe_{time.strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(folder, exist_ok=True)
+    print(f"[*] Master Index {'try' if adding else 'probe'} in 5 s, no bet is placed. Frames go to {folder}. Bring Betty to "
+          "the front; touching the mouse or keyboard stops it.")
+    time.sleep(5)
+    if not _probe_betty_in_front():
+        print("[-] Betty couldn't be brought to the front: nothing pressed.")
+        return
+    HumanInputMonitor(lambda kind: abort_event.set() if kind != "move" else None).start()
+
+    def frame(tag: str):
+        name = f"{time.strftime('%H%M%S')}_{int(time.time() * 1000) % 1000:03d}_{tag}.png"
+        pyautogui.screenshot().save(os.path.join(folder, name))
+
+    try:
+        screen = detect_screen()
+        print(f"[*] Betty shows {screen}.")
+        if screen == SCREEN_VIEW_WAGERS and go_home():
+            screen = SCREEN_HOME
+        if screen == SCREEN_HOME:
+            spot = find_button(pyautogui.screenshot(), "Accept", (450, 90, 240, 100))
+            if not spot:
+                print("[-] Accept Cash Wager wasn't found on Home: nothing done.")
+                return
+            betty_click(*spot)
+            time.sleep(1.5)  # a picture menu no screen name covers (not the events screen a wager's bet edit opens on)
+            betty_press('1')  # the first folder, as a wager's bet edit does, so the index opens from a folder's screen
+            wait_for_screen({SCREEN_RACE_ENTRY, SCREEN_RACE_ENTRY_READY}, timeout=NAV_TIMEOUT)
+        t0 = time.time()
+        index_open()
+        print(f"[+] Master Index open in {time.time() - t0:.1f}s; filters {index_filter_labels(pyautogui.screenshot())}.")
+        frame("open")
+        if adding:
+            records = sports_records_by_key()
+            for n, item in enumerate(items):
+                text, _, price = item.partition('@')
+                sel = dict(mi.split_line(text, records), price=price.strip(" )"), sport=True)
+                print(f"[*] {n + 1}: {sel}")
+                enter_sports_selection(sel, n)
+                frame(f"added_{n + 1}")
+        else:
+            for wording in items:
+                for pace in (0.0, 0.05, 0.15):
+                    t0 = time.time()
+                    ok = index_type_search(wording, afresh=True, pace=pace)
+                    typed_in = time.time() - t0
+                    read = index_wait_list(wording) if ok else {'verdict': 'box', 'rows': [], 'more': False}
+                    print(f"[*] Typed in {typed_in:.1f}s, then {time.time() - t0 - typed_in:.1f}s for Betty to show it.")
+                    print(f"[*] '{wording}' typed at {pace}s a key: {read['verdict']} after {time.time() - t0:.1f}s, "
+                          f"{len(read['rows'])} rows, more below: {read['more']}")
+                    for r in read['rows']:
+                        print(f"[*]   {r['row'] + 1:2d} {r['event']!r} | {r['market']!r} | {r['result']!r} | {r['price']!r}"
+                              f"{'' if r['price_sure'] else ' (unsure)'}")
+                    frame(f"{re.sub(r'[^a-z0-9]', '_', wording)}_{pace}_{read['verdict']}")
+    except WatcherStop:
+        print("[*] Stopped by a key or click.")
+    except (NavError, WagerForStaff, PlacingRefused) as e:
+        print(f"[-] {type(e).__name__}: {e}")
+        frame("problem")
+    abort_event.clear()
+    print("[*] Backing out: nothing placed.")
+    print(f"[{'+' if go_home() else '-'}] Betty shows {detect_screen()}.")
+
+
 def check_screen_once(delay: float = 5.0):
     """Read-only diagnosis (python betty_companion.py --check-screen): one screenshot after `delay` seconds, then what
     the watcher would see. No key, no click."""
@@ -8180,6 +9167,13 @@ def check_screen_once(delay: float = 5.0):
     img = pyautogui.screenshot()
     screen = detect_screen(img)
     print(f"[*] Screen: {screen}")
+    if screen == SCREEN_MASTER_INDEX:
+        read = read_index(img)
+        print(f"[*] Master Index: search {read['search']!r}, {read['state']}, filters {index_filter_labels(img)}, "
+              f"sport filters on {index_sport_filters_on(img)}, more below: {read['more']}")
+        for r in read['rows']:
+            print(f"[*]   {r['row'] + 1:2d} {r['colour']:5s} {r['event']!r} | {r['market']!r} | {r['result']!r} | "
+                  f"{r['price']!r}{'' if r['price_sure'] else ' (unsure)'}")
     if screen == SCREEN_VIEW_WAGERS:
         print(f"[*] Unedited list: {read_unedited_queue(img)} (top box: {view_wagers_queue_state(img)})")
         d = read_wager_details(img)
@@ -8218,6 +9212,9 @@ def handle_backend_command(line: str):
         set_watcher(False, "Pause in the launcher")
     elif cmd in ("test", "live"):
         set_test_mode(cmd == "test")
+    elif cmd in ("sports on", "sports off"):
+        os.environ["SPORTS_ON"] = "1" if cmd == "sports on" else "0"
+        print(f"[*] Sports {'on' if cmd == 'sports on' else 'off'} (the switch in the control window).")
     elif cmd == "status":
         backend_event("state", **watcher_state())
     elif cmd == "quit":
@@ -8254,6 +9251,9 @@ def main():
     """Start-up, run as a script (python betty_companion.py) or by the exe (BettyCompanion.exe --backend)."""
     if "--check-screen" in sys.argv:
         check_screen_once()
+        sys.exit(0)
+    if "--index-probe" in sys.argv or "--index-try" in sys.argv:
+        index_probe([a for a in sys.argv[1:] if not a.startswith("--")], adding="--index-try" in sys.argv)
         sys.exit(0)
     sw, sh = get_screen_resolution()
     backend_event("hello", version=__version__, pid=os.getpid(), log=SESSION_LOG, screen=f"{sw}x{sh}")
