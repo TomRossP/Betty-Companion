@@ -9,7 +9,7 @@ for staff, with the reason.
 1. Download `BettyCompanion-<version>.zip` from **Releases** and unzip it somewhere the till can write to, for example
    `C:\BettyCompanion`.
 2. Double-click `BettyCompanion.exe`. Nothing is installed.
-3. Pair the till with the relay once: **Controls** tab, **Pair this till**, then approve the code on the relay's
+3. Pair the till with the relay once: **System** tab, **Settings**, **Pair this till**, then approve the code on the relay's
    `/admin` page.
 
 The staff guide is [release/README.txt](release/README.txt). The relay is set up as in

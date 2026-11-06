@@ -27,7 +27,7 @@ EVERY DAY
 - Double-click BettyCompanion.exe, then Start. The window steps aside so Betty is in front, and the overlay in the
   corner shows what it is doing.
 - Pause: stops at once and touches nothing; Start carries on. Stop: closes the program (and the overlay).
-- The switch on the right is the mode: on (orange) = LIVE, places bets; off = TEST, stops before placing.
+- The mode switch is on the System tab, under Settings: on (orange) = LIVE, places bets; off = TEST, stops before placing.
   LIVE is the default.
 - The light at the bottom: green "Ready" = ready to automate; red "Not ready" (point at it to see what is missing). The Gemini light shows whether
   slips can be read.
