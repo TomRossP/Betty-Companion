@@ -599,7 +599,8 @@ def is_selection_existent(horse: dict, runners: list[dict] | None = None, rules_
     is_dog, trap_num, _ = is_greyhound_or_trap_selection(horse)
     effective_trap = trap_num if trap_num is not None else (num if isinstance(num, int) else None)
     # A selection written as a bare number is a trap only when it's a dog: horse number 12 is no 'Trap 12' (review R25)
-    if is_dog or (effective_trap is not None and 'trap' in name):
+    # 'Trap 7' names a trap; a horse called Trapper John doesn't (7 Nov), so its cloth number isn't held to the traps
+    if is_dog or (effective_trap is not None and re.match(r'\W*trap\s*\d', name)):
         if effective_trap is not None and (effective_trap < 1 or effective_trap > max_traps):
             return False, f"Trap {effective_trap} does not exist ({firm}: greyhound races have at most {max_traps} traps)"
 

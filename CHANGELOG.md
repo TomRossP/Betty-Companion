@@ -18,6 +18,12 @@ Offline tests only: **not yet run on a till**, so it isn't proven that this stop
   check that the wager loaded wanted exactly 7 digits after the dot, so it read the blue box as nothing, every time. A wager number is now
   the shop and its count compared as numbers, with no fixed number of digits, so any shop's numbers match however Betty pads them. A read
   with two numbers run together (`010.0577.805`) still isn't taken.
+- **A horse whose name starts with 'Trap' was taken for a dog** (10.0577805, HO Cashier, 7 Nov: Trapper John #5 in the 6:30 at
+  Southwell). Betty entered it right, but the betslip check called any line starting with the letters 'trap' a dog, and the wager went
+  to staff as "betslip shows a dog ('Trapper John') where a horse was wanted". A dog's line is now 'Trap' and its number ('Trap 3'),
+  as the runner list's check already was. The same letters made the rules hold a horse like Trapper John to a greyhound race's 8
+  traps (#9 or more refused as "Trap 9 does not exist"): no longer. `scratch/test_trap_names.py` (in `run_all_tests.py`), with the
+  real betslip of 12:46.
 
 ## [1.3.6] - 2026-11-06
 

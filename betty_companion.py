@@ -7255,7 +7255,8 @@ def betslip_line_problems(got: dict, horse: dict) -> list[str]:
     # (Doncaster horses and dogs at one time) reads 'Trap 3' and would otherwise skip the name check and pass
     category = horse.get('category')
     line_name = str(got.get('name') or '').strip()
-    trap_line = line_name.lower().startswith('trap')
+    # A dog's line is 'Trap 3': 'trap' and its number, never the letters alone ('Trapper John', a horse, 7 Nov)
+    trap_line = bool(re.match(r'\W*trap\s*\d', line_name, re.I))
     kind_known = category in ('greyhound', 'domestic', 'international')  # virtual: either kind, the line says which
     is_dog = category == 'greyhound' or (not kind_known and trap_line)
     if kind_known and not is_dog and trap_line:
