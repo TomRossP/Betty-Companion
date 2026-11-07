@@ -13,6 +13,11 @@ Offline tests only: **not yet run on a till**, so it isn't proven that this stop
   allows, for as long as Companion was open there. All 6 freezes logged from 16:00 to 17:03 fell inside a read and ended as it ended, and closing Companion on the cashier stopped the reads. The launcher's Data
   refresh ran every minute from the moment it opened, the same timing. What it reads adds up to about 6 MB when measured on the manager till, so what makes up the rest isn't known. A cashier till now reads
   for the Data and Runners tabs while they're on screen, and until it has found today's racecards. The manager till is unchanged.
+- **Every wager "did not load" on a shop whose wager numbers have a 0 after the dot** (HO Cashier, 7 Nov, rebuilt as 1.3.7: the version
+  wasn't raised). Betty's list shows `010.0577805` but the blue box on View Wagers shows `10.577805`: it drops the zeros after the dot. The
+  check that the wager loaded wanted exactly 7 digits after the dot, so it read the blue box as nothing, every time. A wager number is now
+  the shop and its count compared as numbers, with no fixed number of digits, so any shop's numbers match however Betty pads them. A read
+  with two numbers run together (`010.0577.805`) still isn't taken.
 
 ## [1.3.6] - 2026-11-06
 

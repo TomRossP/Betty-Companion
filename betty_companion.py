@@ -4740,9 +4740,28 @@ def _ocr_box(img: Any, box: tuple, config: str, scale: int = 3, invert: bool = F
         return ""
 
 
+# A wager number is the shop, a dot, then the shop's wager count, with no fixed number of digits: shops differ, and
+# Betty writes one wager two ways. The lists pad it ('010.0577805'); the blue box drops the zeros after the dot
+# ('10.577805': HO Cashier, 7 Nov, where 7 digits after the dot were required and every wager "did not load"). A
+# number run into more digits or another dot (a misread '010.0577.805') isn't taken.
+_WAGER_NUMBER_RE = re.compile(r'(?<!\d)(?<!\d\.)(\d+)\.(\d+)(?!\d)(?!\.\d)')
+
+
+def wager_number_parts(text: str | None) -> tuple[int, int] | None:
+    """(shop, count), whatever the zeros: '010.0577805', '10.0577805' and '10.577805' are all (10, 577805)."""
+    m = _WAGER_NUMBER_RE.search(text or '')
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def same_wager(a: str | None, b: str | None) -> bool:
+    """The same wager, however each was written ('10.577805' in the blue box, '10.0577805' from the list)."""
+    parts = wager_number_parts(a)
+    return parts is not None and parts == wager_number_parts(b)
+
+
 def normalise_wager_number(text: str) -> str | None:
-    """'009.2445201' or '9.2445201' -> '9.2445201'; None when it doesn't read as a wager number."""
-    m = re.search(r'(\d{1,4})\.(\d{7})', text or '')
+    """'009.2445201' -> '9.2445201': the shop's zeros dropped, the count as written. None when it isn't a number."""
+    m = _WAGER_NUMBER_RE.search(text or '')
     return f"{int(m.group(1))}.{m.group(2)}" if m else None
 
 
@@ -5177,7 +5196,7 @@ def load_wager(row: int, number: str) -> dict:
     # What the blue box says now: seen again under the new number, Betty has drawn only the number so far, however many
     # reads agree (9.2468538, 6 Nov: frozen mid-draw, two reads gave 9.2468536's 16:39:41 and £3.00 for its 16:41:34 and £10.00)
     old = read_wager_details(shown)
-    old_details = (old['struck_clock'], old['payment_pence']) if old['number'] != number else None
+    old_details = (old['struck_clock'], old['payment_pence']) if not same_wager(old['number'], number) else None
     if number in current_q:
         row = current_q.index(number)
     elif current_q:  # the list was read and the wager has left it (staff took it): its old row is another wager
@@ -5195,8 +5214,9 @@ def load_wager(row: int, number: str) -> dict:
         # Taken only when two reads in a row agree: Betty draws the number before the struck time and Payment, and
         # 9.2453984 (27 Oct) was read with the wager shown before it (12:49:13, £10.00 for 11:03:28, £6.20)
         read = (details['number'], details['struck_clock'], details['payment_pence'])
-        if details['number'] == number and details['struck_time'] and details['payment_pence'] is not None:
+        if same_wager(details['number'], number) and details['struck_time'] and details['payment_pence'] is not None:
             if read == last_read and read[1:] != old_details:
+                details['number'] = number  # as the list writes it, whatever zeros the blue box dropped
                 corpus_save('wager_details', img, {'number': number},
                             {k: details[k] for k in ('number', 'struck_clock', 'payment_pence')})
                 return details
@@ -5205,7 +5225,7 @@ def load_wager(row: int, number: str) -> dict:
             time.sleep(0.05)
         last_read = read
     last = read_wager_details(pyautogui.screenshot())
-    if last['number'] == number:
+    if same_wager(last['number'], number):
         if (last['struck_clock'], last['payment_pence']) == old_details and wait_out_freeze(f"wager {number} loading"):
             # Otherwise Betty is alive and showing it: two wagers struck the same second for the same money
             time.sleep(0.3)
@@ -5218,6 +5238,7 @@ def load_wager(row: int, number: str) -> dict:
             print(f"[!] Wager {number}: struck time / Payment not read the same twice "
                   f"({last['struck_clock']!r}, {last['payment_pence']!r}); not taken.")
             last.update(struck_time=None, struck_clock=None, payment_pence=None)
+        last['number'] = number  # as the list writes it, whatever zeros the blue box dropped
         return last  # loaded, but struck time / Payment unread or unconfirmed: the caller sends it to staff
     raise NavError(f"wager {number} did not load (blue box shows {last['number']})")
 
